@@ -1,0 +1,33 @@
+# Bridge setup via systemd-networkd daemon
+# /etc/systemd/network/10-eth.network
+[Match]
+Name=enp3s0
+
+[Network]
+Bridge=br0
+
+# /etc/systemd/network/10-usb.network
+[Match]
+Name=enx*
+
+[Network]
+Bridge=br0
+
+# /etc/systemd/network/20-br0.netdev
+[NetDev]
+Name=br0
+Kind=bridge
+
+[Bridge]
+STP=no
+
+# /etc/systemd/network/20-br0.network
+[Match]
+Name=br0
+
+[Network]
+LinkLocalAddressing=no
+IPv6AcceptRA=no
+
+# systemctl enable --now systemd-networkd
+
