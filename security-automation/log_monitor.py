@@ -24,6 +24,5 @@ with open(log_file_path, "r") as f:
                 attacker_ip = ip_match.group()
                 print(f"Triggering Ansible Playbook to block {attacker_ip}...")
                 
-                # الكود الجديد اللي بخليه يطبع كل شيء فوراً على الشاشة
                 cmd = ["ansible-playbook", playbook_path, "--extra-vars", f"src_ip={attacker_ip}"]
                 subprocess.run(cmd)
