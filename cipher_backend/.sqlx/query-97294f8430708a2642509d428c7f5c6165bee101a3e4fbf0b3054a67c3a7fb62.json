@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT 1 AS exists_flag FROM networks WHERE network_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "exists_flag",
+        "ordinal": 0,
+        "type_info": "Int"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "97294f8430708a2642509d428c7f5c6165bee101a3e4fbf0b3054a67c3a7fb62"
+}

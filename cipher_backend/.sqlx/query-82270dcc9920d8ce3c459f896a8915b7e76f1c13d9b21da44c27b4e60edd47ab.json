@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT 1 AS exists_flag FROM networks Where network_id = ? AND username = ? AND is_admin = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "exists_flag",
+        "ordinal": 0,
+        "type_info": "Int"
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "82270dcc9920d8ce3c459f896a8915b7e76f1c13d9b21da44c27b4e60edd47ab"
+}

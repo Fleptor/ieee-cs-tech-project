@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO networks (network_id, username, is_admin) VALUES (?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "87c9615c64d49540a79ecdbd6e4137729db3beb2eaf7e490c79f665477bee9b0"
+}

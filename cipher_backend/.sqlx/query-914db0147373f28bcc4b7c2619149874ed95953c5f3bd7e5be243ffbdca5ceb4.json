@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE devices SET state = ?  WHERE mac = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "914db0147373f28bcc4b7c2619149874ed95953c5f3bd7e5be243ffbdca5ceb4"
+}

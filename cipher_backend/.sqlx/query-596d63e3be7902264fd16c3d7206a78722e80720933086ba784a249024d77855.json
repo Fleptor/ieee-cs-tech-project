@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM devices WHERE state = 'blocked'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "596d63e3be7902264fd16c3d7206a78722e80720933086ba784a249024d77855"
+}
