@@ -1,0 +1,60 @@
+#roles/detection/tasks/main.yml
+
+
+---
+- name: Deploy DoS monitor script
+  copy:
+    src: dos_monitor.py
+    dest: /usr/local/bin/dos_monitor.py
+    mode: '0755'
+
+- name: Deploy fail2ban DoS config
+  template:
+    src: fail2ban-ddos.conf.j2
+    dest: /etc/fail2ban/jail.d/ddos.conf
+  notify: Restart fail2ban
+
+- name: Create systemd service for DoS monitor
+  copy:
+    dest: /etc/systemd/system/dos-monitor.service
+    content: |
+      [Unit]
+      Description=SOHO DoS/DDoS Monitor
+      After=network.target nftables.service
+
+      [Service]
+      Type=simple
+      ExecStart=/usr/bin/python3 /usr/local/bin/dos_monitor.py
+      Restart=always
+      RestartSec=5
+      Environment="MONITOR_IFACE={{ wan_interface }}"
+      Environment="ICMP_THRESHOLD={{ dos_thresholds.icmp_per_second }}"
+      Environment="SYN_THRESHOLD={{ dos_thresholds.syn_per_second }}"
+      Environment="UDP_THRESHOLD={{ dos_thresholds.udp_per_second }}"
+      Environment="CONN_THRESHOLD={{ dos_thresholds.conn_per_minute }}"
+      Environment="BAN_DURATION={{ dos_thresholds.ban_duration }}"
+      Environment="ALERT_EMAIL={{ alert_email }}"
+      Environment="SMTP_HOST=localhost"
+      Environment="WHITELIST={{ whitelist_ips | join(',') }}"
+
+      [Install]
+      WantedBy=multi-user.target
+
+- name: Enable and start DoS monitor
+  systemd:
+    name: dos-monitor
+    daemon_reload: yes
+    enabled: yes
+    state: started
+
+- name: Enable and start fail2ban
+  systemd:
+    name: fail2ban
+    enabled: yes
+    state: started
+
+handlers:
+  - name: Restart fail2ban
+    systemd:
+      name: fail2ban
+      state: restarted

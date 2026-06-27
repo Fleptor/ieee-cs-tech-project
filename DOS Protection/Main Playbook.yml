@@ -1,0 +1,39 @@
+#site.yml
+
+
+---
+- name: Configure SOHO Router - DoS/DDoS Protection
+  hosts: router
+  become: true
+
+  roles:
+    - role: base
+      tags: [base, packages]
+
+    - role: firewall
+      tags: [firewall, nftables]
+
+    - role: detection
+      tags: [detection, monitoring]
+
+    - role: alerting
+      tags: [alerting, email]
+
+  post_tasks:
+    - name: Verify nftables is running
+      command: nft list ruleset
+      register: nft_output
+      changed_when: false
+
+    - name: Verify DoS monitor is running
+      systemd:
+        name: dos-monitor
+      register: monitor_status
+
+    - name: Print deployment summary
+      debug:
+        msg:
+          - "✅ nftables firewall: active"
+          - "✅ DoS monitor: {{ monitor_status.status.ActiveState }}"
+          - "✅ fail2ban: active"
+          - "✅ Alerts → {{ alert_email }}"

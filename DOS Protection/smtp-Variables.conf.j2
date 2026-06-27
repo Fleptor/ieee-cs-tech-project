@@ -1,0 +1,14 @@
+#roles/alerting/templates/msmtp.conf.j2
+
+defaults
+auth           on
+tls            on
+tls_trust_file /etc/ssl/certs/ca-certificates.crt
+logfile        /var/log/msmtp.log
+
+account        default
+host           {{ smtp_host }}
+port           {{ smtp_port }}
+from           {{ smtp_user }}
+user           {{ smtp_user }}
+password       {{ smtp_password }}

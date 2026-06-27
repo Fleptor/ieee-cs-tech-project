@@ -1,0 +1,40 @@
+#roles/base/tasks/main.yml
+
+---
+- name: Update apt cache
+  apt:
+    update_cache: yes
+    cache_valid_time: 3600
+
+- name: Install required packages
+  apt:
+    name:
+      - nftables
+      - fail2ban
+      - python3
+      - python3-pip
+      - msmtp
+      - msmtp-mta
+      - iftop
+      - vnstat
+      - tcpdump
+      - net-tools
+      - iproute2
+      - conntrack
+      - ipset
+    state: present
+
+- name: Install Python libraries for detection script
+  pip:
+    name:
+      - scapy
+      - psutil
+    executable: pip3
+
+- name: Enable IP forwarding (router function)
+  sysctl:
+    name: net.ipv4.ip_forward
+    value: '1'
+    sysctl_set: yes
+    state: present
+    reload: yes

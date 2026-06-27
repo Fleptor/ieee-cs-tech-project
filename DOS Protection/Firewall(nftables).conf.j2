@@ -1,0 +1,93 @@
+#roles/firewall/templates/nftables.conf.j2
+
+
+#!/usr/sbin/nft -f
+flush ruleset #Clears out any existing firewall rules before loading these new ones
+
+# --- IP Sets for blocking ---
+table inet filter {  # Creates a filter table that handles both IPv4 and IPv6 traffic
+
+  set blocked_ips {
+    type ipv4_addr
+    flags dynamic, timeout
+    timeout {{ dos_thresholds.ban_duration }}s
+  }
+
+  set syn_flood_track { #Temporarily keeps track of IPs initiating too many TCP connections
+    type ipv4_addr
+    flags dynamic, timeout
+    timeout 10s
+  }
+
+  # --- INPUT chain (traffic to the router itself) ---
+  chain input {
+    type filter hook input priority 0; policy drop;
+
+    # Allow loopback
+    iif lo accept 
+
+    # Allow established/related
+    ct state established,related accept
+
+    # Drop invalid packets
+    ct state invalid drop
+
+    # Block IPs in the blocklist
+    ip saddr @blocked_ips drop
+
+    # --- ICMP flood protection ---
+    ip protocol icmp limit rate {{ dos_thresholds.icmp_per_second }}/second burst 10 packets accept
+    ip protocol icmp drop
+
+    # --- SYN flood protection ---
+    tcp flags syn \
+      limit rate {{ dos_thresholds.syn_per_second }}/second burst 20 packets \
+      add @syn_flood_track { ip saddr timeout 10s } accept
+    tcp flags syn ip saddr @syn_flood_track \
+      add @blocked_ips { ip saddr } drop
+
+    # --- UDP flood protection ---
+    ip protocol udp limit rate {{ dos_thresholds.udp_per_second }}/second burst 50 packets accept
+    ip protocol udp drop
+
+    # Allow SSH from LAN only
+    iif {{ lan_interface }} tcp dport 22 accept
+
+    # Allow DNS, DHCP from LAN
+    iif {{ lan_interface }} udp dport { 53, 67 } accept
+    iif {{ lan_interface }} tcp dport 53 accept
+  }
+
+  # --- FORWARD chain (traffic passing through router) ---
+  chain forward {
+    type filter hook forward priority 0; policy drop;
+
+    ct state established,related accept
+    ct state invalid drop
+
+    # Block forwarding from/to blocked IPs
+    ip saddr @blocked_ips drop
+    ip daddr @blocked_ips drop
+
+    # Allow LAN to WAN
+    iif {{ lan_interface }} oif {{ wan_interface }} accept
+
+    # Per-source connection rate limit (DoS from LAN device)
+    ip saddr != { {{ whitelist_ips | join(', ') }} } \
+      ct count over {{ dos_thresholds.conn_per_minute }} \
+      add @blocked_ips { ip saddr } drop
+  }
+
+  # --- OUTPUT chain ---
+  chain output {
+    type filter hook output priority 0; policy accept;
+  }
+}
+
+# --- NAT table ---
+table ip nat {
+  chain postrouting {
+    type nat hook postrouting priority srcnat;
+    oif {{ wan_interface }} masquerade
+  }
+}

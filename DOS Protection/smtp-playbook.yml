@@ -1,0 +1,14 @@
+#roles/alerting/tasks/main.yml
+
+---
+- name: Deploy msmtp config
+  template:
+    src: msmtp.conf.j2
+    dest: /etc/msmtprc
+    mode: '0600'
+    owner: root
+
+- name: Set msmtp as default MTA
+  alternatives:
+    name: mta
+    path: /usr/bin/msmtp

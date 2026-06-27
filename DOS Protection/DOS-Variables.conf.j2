@@ -1,0 +1,22 @@
+#roles/detection/templates/fail2ban-ddos.conf.j2
+
+
+[DEFAULT]
+bantime  = {{ dos_thresholds.ban_duration }}
+findtime = {{ fail2ban_findtime }}
+maxretry = {{ fail2ban_maxretry }}
+banaction = nftables-multiport
+backend = systemd
+
+[dos-monitor]
+enabled  = true
+filter   = dos-monitor
+logpath  = /var/log/dos_monitor.log
+maxretry = 1
+bantime  = {{ dos_thresholds.ban_duration }}
+
+[sshd]
+enabled  = true
+port     = ssh
+logpath  = /var/log/auth.log
+maxretry = 5

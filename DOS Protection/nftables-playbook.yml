@@ -1,0 +1,29 @@
+#roles/firewall/tasks/main.yml
+
+---
+- name: Deploy nftables config
+  template:
+    src: nftables.conf.j2
+    dest: /etc/nftables.conf
+    mode: '0640'
+  notify: Reload nftables
+
+- name: Deploy sysctl hardening
+  template:
+    src: sysctl.conf.j2
+    dest: /etc/sysctl.d/99-router-hardening.conf
+  notify: Reload sysctl
+
+- name: Enable and start nftables
+  systemd:
+    name: nftables
+    enabled: yes
+    state: started
+
+
+handlers:
+  - name: Reload nftables
+    command: nft -f /etc/nftables.conf
+
+  - name: Reload sysctl
+    command: sysctl --system
