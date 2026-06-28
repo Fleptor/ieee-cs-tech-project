@@ -51,7 +51,15 @@ pub struct ChangeAdminRequest {
 
 #[derive(Serialize, Deserialize)]
 pub struct NormalRequest {
+    pub details: String,
+    pub username: String,
+    pub password: String
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DeleteRequest {
     pub network_id: String,
+    pub mac: String,
     pub username: String,
     pub password: String
 }
@@ -67,6 +75,7 @@ pub struct RegisterRequest {
 
 #[derive(Serialize, Deserialize)]
 pub struct ChangeStateRequest {
+    pub network_id: String,
     pub username: String,
     pub password: String,
     pub mac: String,

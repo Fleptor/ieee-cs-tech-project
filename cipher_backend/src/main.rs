@@ -3,10 +3,16 @@ use std::net::SocketAddr;
 use tower_http::cors::{Any, CorsLayer};
 //use lettre::{Message, SmtpTransport, Transport};
 //use rand::Rng;
+use rand_core::OsRng;
+use argon2::{
+    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString
+    },
+    Argon2
+};
 mod models;
 use crate::models::{
     AppError, ChangeAdminRequest, ChangeStateRequest, DeviceState, 
-    Network, NetworkDevice, NormalRequest, RegisterRequest, User
+    Network, NetworkDevice, NormalRequest, RegisterRequest, User, DeleteRequest
 };
 
 type SharedDatabase = sqlx::SqlitePool;
@@ -25,13 +31,29 @@ async fn send_email(address:&str){
 */
 
 async fn verify_user(db: &SharedDatabase, username: &str, password: &str) -> Result<Result<(), StatusCode>, AppError> {
-    let existing = sqlx::query!("SELECT 1 AS exists_flag FROM users WHERE username = ? AND password = ?", username, password)
+    let existing = sqlx::query_scalar!("SELECT password FROM users WHERE username = ? ", username)
         .fetch_optional(db)
         .await?;
-    if existing.is_some(){
-        return Ok(Ok(()));
+    if let Some(hash_password) = existing {
+        if verify_password(password, &hash_password) {
+            return Ok(Ok(()))
+        }
+        return Ok(Err(StatusCode::UNAUTHORIZED));
     }
-    Ok(Err(StatusCode::UNAUTHORIZED))
+    Ok(Err(StatusCode::CONFLICT))
+}
+fn verify_password(password: &str, hashed_password: &str) -> bool {
+    let parsed_head = match PasswordHash::new(hashed_password){
+        Ok(hash) => hash,
+        Err(_) => return false
+    };
+    Argon2::default().verify_password(password.as_bytes(), &parsed_head).is_ok()
+}
+
+fn password_hasher(password: &str) -> String {
+    let salt = SaltString::generate(&mut OsRng);
+    let argon2 = Argon2::default();
+    argon2.hash_password(password.as_bytes(), &salt).unwrap().to_string()
 }
 
 // can only be used by me 
@@ -52,8 +74,7 @@ async fn make_network_and_assign_admin(State(db):State<SharedDatabase>, Json(pay
     }
     sqlx::query!("INSERT INTO networks (network_id, username, is_admin) VALUES (?, ?, ?)", payload.network_id, payload.username, 1)
         .execute(&db)
-        .await
-        .unwrap();
+        .await?;
     Ok(StatusCode::ACCEPTED)
 }
 
@@ -84,13 +105,36 @@ async fn signup_user(State(db): State<SharedDatabase>, Json(payload): Json<User>
         .fetch_optional(&db)
         .await?;
     if existing.is_some() {
-        println!("Warning, there is a user with the name {}",payload.username);
         return Ok(StatusCode::CONFLICT);
     }
-    sqlx::query!("INSERT INTO users (username, email, password) VALUES (?, ?, ?)", payload.username, payload.email, payload.password)
+    let existing1 = sqlx::query!("SELECT 1 AS exists_flag FROM users WHERE email = ?", payload.email)
+        .fetch_optional(&db)
+        .await?;
+    if existing1.is_some() {
+        return Ok(StatusCode::CONFLICT);
+    }
+    let hashed_password = password_hasher(&payload.password);
+    sqlx::query!("INSERT INTO users (username, email, password) VALUES (?, ?, ?)", payload.username, payload.email, hashed_password)
         .execute(&db)
         .await?;
     Ok(StatusCode::ACCEPTED)
+}
+
+async fn login_user(State(db): State<SharedDatabase>, Json(payload): Json<User>) -> Result<StatusCode, AppError>{
+    let mut password1: Option<String> = sqlx::query_scalar!("SELECT password FROM users WHERE username = ?", payload.username)
+        .fetch_optional(&db)
+        .await?;
+    if password1.is_none() {
+        password1 = sqlx::query_scalar!("SELECT password FROM users WHERE email = ?", payload.email)
+        .fetch_optional(&db)
+        .await?;
+    }
+    if let Some(password) = password1 {
+        if verify_password(&payload.password, &password) {
+            return Ok(StatusCode::ACCEPTED);
+        }
+    }
+    Ok(StatusCode::UNAUTHORIZED)
 }
 
 // still needs work
@@ -109,29 +153,11 @@ async fn add_network_to_user(State(db): State<SharedDatabase>, Json(payload): Js
         return Ok(StatusCode::CONFLICT);
     }
     if let Some(name) = username {
-        let email: String = sqlx::query_scalar!("SELECT email FROM users WHERE username = ?", name)
+        let _email: String = sqlx::query_scalar!("SELECT email FROM users WHERE username = ?", name)
             .fetch_one(&db)
             .await?;
         //send_email(email);
         return Ok(StatusCode::ACCEPTED);
-    }
-    Ok(StatusCode::CONFLICT)
-}
-
-async fn login_user(State(db): State<SharedDatabase>, Json(payload): Json<User>) -> Result<StatusCode, AppError>{
-    let mut password1: Option<String> = sqlx::query_scalar!("SELECT password FROM users WHERE username = ?", payload.username)
-        .fetch_optional(&db)
-        .await?;
-    if password1.is_none() {
-        password1 = sqlx::query_scalar!("SELECT password FROM users WHERE email = ?", payload.email)
-        .fetch_optional(&db)
-        .await?;
-    }
-    if let Some(password) = password1 {
-        if password == payload.password {
-            return Ok(StatusCode::ACCEPTED);
-        }
-        return Ok(StatusCode::UNAUTHORIZED);
     }
     Ok(StatusCode::CONFLICT)
 }
@@ -141,14 +167,17 @@ async fn get_devices(State(db): State<SharedDatabase>, Json(payload): Json<Norma
     if let Err(auth_error) = verify_user(&db, &payload.username, &payload.password).await?{
         return Ok(Err(auth_error));
     }
-    let devices: Vec<NetworkDevice> = sqlx::query_as!(NetworkDevice, "SELECT * FROM devices WHERE network_id = ?", payload.network_id)
+    let devices: Vec<NetworkDevice> = sqlx::query_as!(NetworkDevice, "SELECT * FROM devices WHERE network_id = ?", payload.details)
         .fetch_all(&db)
         .await?;
     Ok(Ok(Json(devices)))
 }
 
-async fn get_single_device(State(db): State<SharedDatabase>, axum::extract::Path(mac_address): axum::extract::Path<String>) -> Result<Result<Json<NetworkDevice>,StatusCode>, AppError> {
-    let result: Option<NetworkDevice> = sqlx::query_as!(NetworkDevice, "SELECT * FROM devices WHERE mac = ?", mac_address)
+async fn get_single_device(State(db): State<SharedDatabase>, Json(payload): Json<NormalRequest>) -> Result<Result<Json<NetworkDevice>,StatusCode>, AppError> {
+    if let Err(auth_error) = verify_user(&db, &payload.username, &payload.password).await?{
+        return Ok(Err(auth_error));
+    }
+    let result: Option<NetworkDevice> = sqlx::query_as!(NetworkDevice, "SELECT * FROM devices WHERE mac = ?", payload.details)
         .fetch_optional(&db)
         .await?;
     if let Some(device)= result {
@@ -156,7 +185,7 @@ async fn get_single_device(State(db): State<SharedDatabase>, axum::extract::Path
         return Ok(Ok(Json(device)));
     }
     else {
-        println!("Warning, device {} not found", mac_address);
+        println!("Warning, device {} not found", payload.details);
         Ok(Err(StatusCode::NOT_FOUND))
     }
 }
@@ -185,8 +214,11 @@ async fn register_device(State(db): State<SharedDatabase>, Json(payload): Json<R
     Ok(Ok(Json(new_device)))
 }
 
-async fn change_state(State(db): State<SharedDatabase>, Json(payload): Json<ChangeStateRequest>) -> Result<StatusCode, AppError> {
+async fn change_state(State(db): State<SharedDatabase>, Json(payload): Json<ChangeStateRequest>) -> Result<Result<Json<Vec<NetworkDevice>>, StatusCode>, AppError> {
     println!("--> [POST] /api/state - Targeting MAC: {}", payload.mac);
+    if let Err(auth_error) = verify_user(&db, &payload.username, &payload.password).await?{
+        return Ok(Err(auth_error));
+    }
     let state_str = match payload.state {
     DeviceState::Allowed => "allowed",
     DeviceState::Blocked => "blocked",
@@ -197,46 +229,34 @@ async fn change_state(State(db): State<SharedDatabase>, Json(payload): Json<Chan
         .await?;
     if result.rows_affected() != 0 {
         println!("Device {} state changed.", payload.mac);
-        return Ok(StatusCode::ACCEPTED);
+        let devices: Vec<NetworkDevice> = sqlx::query_as!(NetworkDevice, "SELECT * FROM devices WHERE network_id = ?", payload.network_id)
+            .fetch_all(&db)
+            .await?;
+        return Ok(Ok(Json(devices)));
     }
     else {
         println!("Warning, device {} not found", payload.mac);
-        Ok(StatusCode::NOT_FOUND)
+        Ok(Err(StatusCode::NOT_FOUND))
     }
 }
 
-async fn delete_device(State(db): State<SharedDatabase>, axum::extract::Path(mac_address): axum::extract::Path<String>) -> Result<StatusCode, AppError> {
-    println!("--> [Delete] /api/devices - Targeting Mac: {}", mac_address);
-    let result = sqlx::query!("DELETE FROM devices WHERE mac = ?", mac_address)
+async fn delete_device(State(db): State<SharedDatabase>, Json(payload): Json<DeleteRequest>) -> Result<Result<Json<Vec<NetworkDevice>>, StatusCode>, AppError> {
+    println!("--> [Delete] /api/devices - Targeting Mac: {}", payload.mac);
+    if let Err(auth_error) = verify_user(&db, &payload.username, &payload.password).await?{
+        return Ok(Err(auth_error));
+    }
+    let result = sqlx::query!("DELETE FROM devices WHERE mac = ?", payload.mac)
         .execute(&db)
-        .await
-        .unwrap();
+        .await?;
     if result.rows_affected() != 0 {
-        println!("SUCCESS: Device {} has been deleted", mac_address);
-        return Ok(StatusCode::ACCEPTED);
+        println!("SUCCESS: Device {} has been deleted", payload.mac);
+        let devices: Vec<NetworkDevice> = sqlx::query_as!(NetworkDevice, "SELECT * FROM devices WHERE network_id = ?", payload.network_id)
+            .fetch_all(&db)
+            .await?;
+        return Ok(Ok(Json(devices)));
     }
-    println!("WARNING: Could not find device with MAC: {}", mac_address);
-    Ok(StatusCode::NOT_FOUND)
-}
-
-async fn purge_blocked(State(db): State<SharedDatabase>, headers: axum::http::HeaderMap) -> Result<Json<Vec<NetworkDevice>>, StatusCode> {
-    if let Some(password) = headers.get("password"){
-        if password != "super_secret_123" {
-            println!("securty alert, invalid admin password");
-            return Err(StatusCode::UNAUTHORIZED);
-        }
-    }
-    else {
-        println!("SECURITY ALERT: Missing admin password header!");
-        return Err(StatusCode::UNAUTHORIZED); // HTTP 401
-    }
-    println!("--> [Delete] /api/devices - All blocked devices");
-    sqlx::query!("DELETE FROM devices WHERE state = 'blocked'")
-        .execute(&db)
-        .await
-        .unwrap();
-    let devices = sqlx::query_as!(NetworkDevice, "SELECT * FROM devices").fetch_all(&db).await.unwrap_or_default();
-    Ok(Json(devices))
+    println!("WARNING: Could not find device with MAC: {}", payload.mac);
+    Ok(Err(StatusCode::NOT_FOUND))
 }
 
 #[tokio::main]
@@ -287,10 +307,9 @@ async fn main() {
         .route("/api/Main/add_network",post(add_network_to_user))
         .route("/api/Main/change_admin",post(change_admin_of_network))
         .route("/api/get_devices", post(get_devices))
-        .route("/api/get_device/:mac", post(get_single_device))
+        .route("/api/get_device", post(get_single_device))
         .route("/api/add_device", post(register_device))
-        .route("/api/delete_device/:mac", delete(delete_device))
-        .route("/api/delete_blocked", delete(purge_blocked))
+        .route("/api/delete_device", delete(delete_device))
         .route("/api/cheang_state", post(change_state))
         .with_state(db) // 4. PASS STATE TO AXUM
         .layer(cors);
