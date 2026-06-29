@@ -1,18 +1,17 @@
-use axum::{Json, Router, extract::State, http::StatusCode, routing::{post, delete}};
+use axum::{Json, Router, extract::State, http::{HeaderMap, StatusCode}, routing::{delete, post}};
 use std::net::SocketAddr;
 use tower_http::cors::{Any, CorsLayer};
+use jsonwebtoken::{encode, EncodingKey, Header, decode, DecodingKey, Validation, errors::Error};
+use chrono::{Utc, Duration};
 //use lettre::{Message, SmtpTransport, Transport};
 //use rand::Rng;
 use rand_core::OsRng;
-use argon2::{
-    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString
-    },
-    Argon2
-};
+use argon2::{password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString}, Argon2};
+use std::env;
 mod models;
 use crate::models::{
-    AppError, ChangeAdminRequest, ChangeStateRequest, DeviceState, 
-    Network, NetworkDevice, NormalRequest, RegisterRequest, User, DeleteRequest
+    AppError, ChangeAdminRequest, ChangeStateRequest, Claims, NormalRequest,
+    DeviceState, Network, NetworkDevice, RegisterRequest, User
 };
 
 type SharedDatabase = sqlx::SqlitePool;
@@ -38,10 +37,10 @@ async fn verify_user(db: &SharedDatabase, username: &str, password: &str) -> Res
         if verify_password(password, &hash_password) {
             return Ok(Ok(()))
         }
-        return Ok(Err(StatusCode::UNAUTHORIZED));
     }
-    Ok(Err(StatusCode::CONFLICT))
+    Ok(Err(StatusCode::UNAUTHORIZED))
 }
+
 fn verify_password(password: &str, hashed_password: &str) -> bool {
     let parsed_head = match PasswordHash::new(hashed_password){
         Ok(hash) => hash,
@@ -54,6 +53,34 @@ fn password_hasher(password: &str) -> String {
     let salt = SaltString::generate(&mut OsRng);
     let argon2 = Argon2::default();
     argon2.hash_password(password.as_bytes(), &salt).unwrap().to_string()
+}
+
+fn create_jwt(username: &str, email: &str) -> Result<String, Error> {
+    let secret = env::var("JWT_SECRET").expect("CRITICAL: JWT_SECRET must be set in .env");
+
+    let exp_time = Utc::now()
+        .checked_add_signed(Duration::hours(2))
+        .expect("valid_timestapm")
+        .timestamp();
+    let claims = Claims {
+        username: username.to_string(),
+        email: email.to_string(),
+        exp: exp_time
+    };
+    encode(&Header::default(), &claims, &EncodingKey::from_secret(secret.as_bytes()))
+}
+
+fn verify_jwt(token: &str) -> Result<(), StatusCode> {
+    let secret = env::var("JWT_SECRET").expect("CRITICAL: JWT_SECRET must be set in .env");
+
+    let token_data = decode::<Claims>(token,&DecodingKey::from_secret(secret.as_bytes()),&Validation::default(),);
+    match token_data {
+        Ok(_) => Ok(()), 
+        Err(err) => {
+            println!("SECURITY ALERT: JWT Validation Failed: {:?}", err);
+            Err(StatusCode::UNAUTHORIZED) 
+        }
+    }
 }
 
 // can only be used by me 
@@ -100,27 +127,28 @@ async fn change_admin_of_network(State(db): State<SharedDatabase>, Json(payload)
     Ok(StatusCode::ACCEPTED)
 }
 
-async fn signup_user(State(db): State<SharedDatabase>, Json(payload): Json<User>) -> Result<StatusCode, AppError>{
+async fn signup_user(State(db): State<SharedDatabase>, Json(payload): Json<User>) -> Result<Result<String, StatusCode>, AppError>{
     let existing = sqlx::query!("SELECT 1 AS exists_flag FROM users WHERE username = ?", payload.username)
         .fetch_optional(&db)
         .await?;
     if existing.is_some() {
-        return Ok(StatusCode::CONFLICT);
+        return Ok(Err(StatusCode::CONFLICT));
     }
     let existing1 = sqlx::query!("SELECT 1 AS exists_flag FROM users WHERE email = ?", payload.email)
         .fetch_optional(&db)
         .await?;
     if existing1.is_some() {
-        return Ok(StatusCode::CONFLICT);
+        return Ok(Err(StatusCode::CONFLICT));
     }
     let hashed_password = password_hasher(&payload.password);
     sqlx::query!("INSERT INTO users (username, email, password) VALUES (?, ?, ?)", payload.username, payload.email, hashed_password)
         .execute(&db)
         .await?;
-    Ok(StatusCode::ACCEPTED)
+    let jwt =  create_jwt(&payload.username, &payload.email)?;
+    return Ok(Ok(jwt));
 }
 
-async fn login_user(State(db): State<SharedDatabase>, Json(payload): Json<User>) -> Result<StatusCode, AppError>{
+async fn login_user(State(db): State<SharedDatabase>, Json(payload): Json<User>) -> Result<Result<String, StatusCode>, AppError>{
     let mut password1: Option<String> = sqlx::query_scalar!("SELECT password FROM users WHERE username = ?", payload.username)
         .fetch_optional(&db)
         .await?;
@@ -131,10 +159,11 @@ async fn login_user(State(db): State<SharedDatabase>, Json(payload): Json<User>)
     }
     if let Some(password) = password1 {
         if verify_password(&payload.password, &password) {
-            return Ok(StatusCode::ACCEPTED);
+            let jwt =  create_jwt(&payload.username, &payload.email)? ;
+            return Ok(Ok(jwt));
         }
     }
-    Ok(StatusCode::UNAUTHORIZED)
+    Ok(Err(StatusCode::UNAUTHORIZED))
 }
 
 // still needs work
@@ -162,22 +191,40 @@ async fn add_network_to_user(State(db): State<SharedDatabase>, Json(payload): Js
     Ok(StatusCode::CONFLICT)
 }
 
-async fn get_devices(State(db): State<SharedDatabase>, Json(payload): Json<NormalRequest>) -> Result<Result<Json<Vec<NetworkDevice>>, StatusCode>, AppError> {
+async fn get_devices(State(db): State<SharedDatabase>,headers: HeaderMap, Json(network_id): Json<String>) -> Result<Result<Json<Vec<NetworkDevice>>, StatusCode>, AppError> {
     println!("--> [GET] /api/devices (Zero-allocation read)");
-    if let Err(auth_error) = verify_user(&db, &payload.username, &payload.password).await?{
+    let auth_header = headers.get("Authorization").and_then(|h| h.to_str().ok());
+    
+    let token = match auth_header {
+        Some(header_value) if header_value.starts_with("Bearer ") => {
+            header_value.trim_start_matches("Bearer ")
+        }
+        _ => return Ok(Err(StatusCode::UNAUTHORIZED)),
+    };
+
+    if let Err(auth_error) = verify_jwt(&token){
         return Ok(Err(auth_error));
     }
-    let devices: Vec<NetworkDevice> = sqlx::query_as!(NetworkDevice, "SELECT * FROM devices WHERE network_id = ?", payload.details)
+    let devices: Vec<NetworkDevice> = sqlx::query_as!(NetworkDevice, "SELECT * FROM devices WHERE network_id = ?", network_id)
         .fetch_all(&db)
         .await?;
     Ok(Ok(Json(devices)))
 }
 
-async fn get_single_device(State(db): State<SharedDatabase>, Json(payload): Json<NormalRequest>) -> Result<Result<Json<NetworkDevice>,StatusCode>, AppError> {
-    if let Err(auth_error) = verify_user(&db, &payload.username, &payload.password).await?{
+async fn get_single_device(State(db): State<SharedDatabase>,headers: HeaderMap, Json(payload): Json<NormalRequest>) -> Result<Result<Json<NetworkDevice>,StatusCode>, AppError> {
+    let auth_header = headers.get("Authorization").and_then(|h| h.to_str().ok());
+    
+    let token = match auth_header {
+        Some(header_value) if header_value.starts_with("Bearer ") => {
+            header_value.trim_start_matches("Bearer ")
+        }
+        _ => return Ok(Err(StatusCode::UNAUTHORIZED)),
+    };
+
+    if let Err(auth_error) = verify_jwt(&token){
         return Ok(Err(auth_error));
     }
-    let result: Option<NetworkDevice> = sqlx::query_as!(NetworkDevice, "SELECT * FROM devices WHERE mac = ?", payload.details)
+    let result: Option<NetworkDevice> = sqlx::query_as!(NetworkDevice, "SELECT * FROM devices WHERE mac = ? AND network_id = ?", payload.mac, payload.network_id)
         .fetch_optional(&db)
         .await?;
     if let Some(device)= result {
@@ -185,7 +232,7 @@ async fn get_single_device(State(db): State<SharedDatabase>, Json(payload): Json
         return Ok(Ok(Json(device)));
     }
     else {
-        println!("Warning, device {} not found", payload.details);
+        println!("Warning, device {} not found", payload.mac);
         Ok(Err(StatusCode::NOT_FOUND))
     }
 }
@@ -214,9 +261,18 @@ async fn register_device(State(db): State<SharedDatabase>, Json(payload): Json<R
     Ok(Ok(Json(new_device)))
 }
 
-async fn change_state(State(db): State<SharedDatabase>, Json(payload): Json<ChangeStateRequest>) -> Result<Result<Json<Vec<NetworkDevice>>, StatusCode>, AppError> {
+async fn change_state(State(db): State<SharedDatabase>,headers: HeaderMap, Json(payload): Json<ChangeStateRequest>) -> Result<Result<Json<Vec<NetworkDevice>>, StatusCode>, AppError> {
     println!("--> [POST] /api/state - Targeting MAC: {}", payload.mac);
-    if let Err(auth_error) = verify_user(&db, &payload.username, &payload.password).await?{
+    let auth_header = headers.get("Authorization").and_then(|h| h.to_str().ok());
+    
+    let token = match auth_header {
+        Some(header_value) if header_value.starts_with("Bearer ") => {
+            header_value.trim_start_matches("Bearer ")
+        }
+        _ => return Ok(Err(StatusCode::UNAUTHORIZED)),
+    };
+
+    if let Err(auth_error) = verify_jwt(&token){
         return Ok(Err(auth_error));
     }
     let state_str = match payload.state {
@@ -240,12 +296,21 @@ async fn change_state(State(db): State<SharedDatabase>, Json(payload): Json<Chan
     }
 }
 
-async fn delete_device(State(db): State<SharedDatabase>, Json(payload): Json<DeleteRequest>) -> Result<Result<Json<Vec<NetworkDevice>>, StatusCode>, AppError> {
+async fn delete_device(State(db): State<SharedDatabase>,headers: HeaderMap, Json(payload): Json<NormalRequest>) -> Result<Result<Json<Vec<NetworkDevice>>, StatusCode>, AppError> {
     println!("--> [Delete] /api/devices - Targeting Mac: {}", payload.mac);
-    if let Err(auth_error) = verify_user(&db, &payload.username, &payload.password).await?{
+    let auth_header = headers.get("Authorization").and_then(|h| h.to_str().ok());
+    
+    let token = match auth_header {
+        Some(header_value) if header_value.starts_with("Bearer ") => {
+            header_value.trim_start_matches("Bearer ")
+        }
+        _ => return Ok(Err(StatusCode::UNAUTHORIZED)),
+    };
+
+    if let Err(auth_error) = verify_jwt(&token){
         return Ok(Err(auth_error));
     }
-    let result = sqlx::query!("DELETE FROM devices WHERE mac = ?", payload.mac)
+    let result = sqlx::query!("DELETE FROM devices WHERE mac = ? AND network_id = ?", payload.mac, payload.network_id)
         .execute(&db)
         .await?;
     if result.rows_affected() != 0 {
@@ -261,6 +326,9 @@ async fn delete_device(State(db): State<SharedDatabase>, Json(payload): Json<Del
 
 #[tokio::main]
 async fn main() {
+
+    dotenvy::dotenv().ok();
+
     let options = sqlx::sqlite::SqliteConnectOptions::new()
         .filename("cipher.db")
         .create_if_missing(true) // This mathematically replaces "?mode=rwc"
@@ -310,7 +378,7 @@ async fn main() {
         .route("/api/get_device", post(get_single_device))
         .route("/api/add_device", post(register_device))
         .route("/api/delete_device", delete(delete_device))
-        .route("/api/cheang_state", post(change_state))
+        .route("/api/change_state", post(change_state))
         .with_state(db) // 4. PASS STATE TO AXUM
         .layer(cors);
 

@@ -1,5 +1,6 @@
 use axum::http::StatusCode;
 use serde::{Serialize, Deserialize};
+use jsonwebtoken;
 #[derive(Serialize, Deserialize, sqlx::FromRow)]
 pub struct Network {
     pub network_id: String,
@@ -23,6 +24,13 @@ pub struct NetworkDevice {
     pub manufacturer: String,
     pub state: DeviceState,
     pub last_seen: String
+}
+
+#[derive(Serialize,Deserialize)]
+pub struct Claims {
+    pub username: String,
+    pub email: String,
+    pub exp: i64
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug, sqlx::Type)]
@@ -49,19 +57,11 @@ pub struct ChangeAdminRequest {
     pub network_id: String
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct NormalRequest {
-    pub details: String,
-    pub username: String,
-    pub password: String
-}
 
 #[derive(Serialize, Deserialize)]
-pub struct DeleteRequest {
+pub struct NormalRequest {
     pub network_id: String,
-    pub mac: String,
-    pub username: String,
-    pub password: String
+    pub mac: String
 }
 
 #[derive(Serialize, Deserialize)]
@@ -76,14 +76,13 @@ pub struct RegisterRequest {
 #[derive(Serialize, Deserialize)]
 pub struct ChangeStateRequest {
     pub network_id: String,
-    pub username: String,
-    pub password: String,
     pub mac: String,
     pub state:DeviceState
 }
 
 pub enum AppError {
     DatabaseError(sqlx::Error),
+    EncodingError(jsonwebtoken::errors::Error)
 }
 
 impl From<sqlx::Error> for AppError {
@@ -92,11 +91,21 @@ impl From<sqlx::Error> for AppError {
     }
 }
 
+impl From<jsonwebtoken::errors::Error> for AppError {
+    fn from(inner: jsonwebtoken::errors::Error) -> Self {
+        AppError::EncodingError(inner)
+    }
+}
+
 impl axum::response::IntoResponse for AppError {
     fn into_response(self) -> axum::response::Response {
         match self {
             AppError::DatabaseError(err) => {
                 println!("CRITICAL DATABASE FAULT: {:?}", err); 
+                (StatusCode::INTERNAL_SERVER_ERROR, "Internal System Fault").into_response() 
+            }
+            AppError::EncodingError(err) => {
+                println!("CRITICAL ENCODING PROBLEM: {:?}", err); 
                 (StatusCode::INTERNAL_SERVER_ERROR, "Internal System Fault").into_response() 
             }
         }
