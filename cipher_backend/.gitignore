@@ -4,3 +4,6 @@ cipher.db
 cipher.db-shm
 cipher.db-wal
 .env
+localhost+1-key.pem
+localhost+1.pem
+mkcert-v1.4.4-linux-amd64

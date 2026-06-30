@@ -382,9 +382,16 @@ async fn main() {
         .with_state(db) // 4. PASS STATE TO AXUM
         .layer(cors);
 
+    let config = axum_server::tls_rustls::RustlsConfig::from_pem_file(
+        "localhost+1.pem",
+        "localhost+1-key.pem",
+        ).await.expect("Failed to load TLS certificates");
+
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
-    println!("CIPHER Cloud Control Plane running on http://{}", addr);
+    println!("CIPHER Cloud Control Plane running on https://{}", addr);
     
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    axum_server::bind_rustls(addr, config)
+        .serve(app.into_make_service())
+        .await
+        .unwrap();
 }
