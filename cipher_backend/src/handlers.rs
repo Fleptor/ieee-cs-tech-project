@@ -48,6 +48,7 @@ pub async fn change_admin_of_network(State(db): State<SharedDatabase>, Json(payl
     Ok(StatusCode::ACCEPTED)
 }
 
+#[axum::debug_handler]
 pub async fn router_ws_handler(ws: WebSocketUpgrade, Path(network_id): Path<String>, State(state): State<AppState>, _key: RouterKey) -> axum::response::Response {
     println!("--> [WS Handshake] Physical Router attempting persistent connection for Network: {}...", network_id);
     ws.on_upgrade(move |socket| handle_router_socket(socket, network_id, state))
