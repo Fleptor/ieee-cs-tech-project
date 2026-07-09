@@ -13,8 +13,8 @@ use crate::SharedDatabase;
 pub static JWT_SECRET: OnceLock<String> = OnceLock::new();
 pub static ROUTER_SECRET: OnceLock<String> = OnceLock::new();
 
-/*
-pub async fn send_email(address:&str){
+
+/*pub async fn send_email(address:&str){
     let email = Message::builder()
         .from("CIPHER Security <noreply@cipher.local>".parse().unwrap())
         .to(address.parse().unwrap())

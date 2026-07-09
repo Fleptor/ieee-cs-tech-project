@@ -2,6 +2,9 @@ use axum::http::StatusCode;
 use serde::{Serialize, Deserialize};
 use jsonwebtoken::errors::Error;
 use std::fmt;
+use tokio::sync::broadcast;
+
+type SharedDatabase = sqlx::SqlitePool;
 
 #[derive(Serialize, Deserialize, sqlx::FromRow)]
 pub struct Network {
@@ -62,6 +65,24 @@ impl From<String> for DeviceState {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct DeviceCommand {
+    pub network_id: String,
+    pub mac: String,
+    pub state: DeviceState,
+}
+
+#[derive(Clone)]
+pub struct AppState {
+    pub db: sqlx::SqlitePool,
+    pub tx: broadcast::Sender<DeviceCommand>,
+}
+impl axum::extract::FromRef<AppState> for SharedDatabase {
+    fn from_ref(state: &AppState) -> Self {
+        state.db.clone()
+    }
+}
+
 #[derive(Serialize, Deserialize, sqlx::FromRow)]
 pub struct ChangeAdminRequest {
     pub old_admin: String,
@@ -70,20 +91,10 @@ pub struct ChangeAdminRequest {
     pub network_id: String
 }
 
-
 #[derive(Serialize, Deserialize)]
 pub struct NormalRequest {
     pub network_id: String,
     pub mac: String
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct RegisterRequest {
-    pub network_id: String,
-    pub mac: String,
-    pub hostname: String,
-    pub ip:String,
-    pub manufacturer: String
 }
 
 #[derive(Serialize, Deserialize)]

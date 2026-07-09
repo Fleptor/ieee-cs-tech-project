@@ -1,4 +1,4 @@
-use axum::{extract::State, http::StatusCode, Json};
+use axum::{extract::{State, Path, ws::{WebSocketUpgrade, WebSocket , Message}}, http::StatusCode, Json};
 use crate::models::*;
 use crate::auth::*;
 use crate::SharedDatabase;
@@ -46,6 +46,140 @@ pub async fn change_admin_of_network(State(db): State<SharedDatabase>, Json(payl
         .execute(&db)
         .await?;
     Ok(StatusCode::ACCEPTED)
+}
+
+pub async fn router_ws_handler(ws: WebSocketUpgrade, Path(network_id): Path<String>, State(state): State<AppState>, _key: RouterKey) -> axum::response::Response {
+    println!("--> [WS Handshake] Physical Router attempting persistent connection for Network: {}...", network_id);
+    ws.on_upgrade(move |socket| handle_router_socket(socket, network_id, state))
+}
+
+async fn handle_router_socket(mut socket: WebSocket, network_id: String, state: AppState) {
+    println!("🟢 [WS] Physical Router successfully connected for Network: {}", network_id);
+    if let Err(e) = socket.send(Message::Text("CIPHER Control Plane: Authorized & Connected".to_string())).await {
+        println!("🔴 [WS ERROR] Failed to send welcome handshake: {}", e);
+        return; 
+    }
+    let mut rx = state.tx.subscribe();
+    loop {
+        tokio::select! {
+            Ok(cmd) = rx.recv() => {
+                if cmd.network_id == network_id {
+                    let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
+                    let command_msg = format!("command_{}", cmd.state);
+                    let status_str = builder.create_string(&command_msg);
+                    let mac_str = builder.create_string(&cmd.mac);
+
+                    let mut res_builder = crate::router_generated::RouterResponseBuilder::new(&mut builder);
+                    res_builder.add_status(status_str);
+                    res_builder.add_mac(mac_str);
+                    let res = res_builder.finish();
+                    builder.finish(res, None);
+
+                    if let Err(net_err) = socket.send(Message::Binary(builder.finished_data().to_vec())).await {
+                        println!("🔴 [WS ERROR] Socket died while sending Kill Command: {}", net_err);
+                        break;
+                    }
+                    println!("⚡ [WS] Pushed real-time execution command to physical router for MAC: {}", cmd.mac);
+                }
+            }
+
+            Some(msg) = socket.recv() => {
+                if let Ok(Message::Binary(bytes)) = msg {
+                    match flatbuffers::root::<crate::router_generated::RouterMessage>(&bytes) {                
+                        Ok(envelope) => {
+                            match envelope.payload_type() {
+                                crate::router_generated::IncomingPayload::RegisterRequest => {
+                                    if let Some(request) = envelope.payload_as_register_request() {
+                                        let req_network_id = request.network_id().unwrap_or_default();
+                                        let mac = request.mac().unwrap_or_default();
+                                        let hostname = request.hostname().unwrap_or_default();
+                                        let ip = request.ip().unwrap_or_default();
+                                        let manufacturer = request.manufacturer().unwrap_or_default();
+
+                                        let existing = sqlx::query!("SELECT 1 AS exists_flag FROM devices WHERE mac = ?", mac)
+                                            .fetch_optional(&state.db).await.unwrap_or(None);
+
+                                        let status_msg = if existing.is_none() {
+                                            if let Err(db_err) = sqlx::query!("INSERT INTO devices (network_id, mac, hostname, ip, manufacturer, state, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?)", 
+                                                req_network_id, mac, hostname, ip, manufacturer, "allowed", "Active Now")
+                                                .execute(&state.db).await 
+                                            {
+                                                println!("🔴 [DB ERROR] Failed to insert new device {}: {}", mac, db_err);
+                                                continue;
+                                            }
+                                            println!("🟢 [WS] Real-Time Device Registered: {}", mac);
+                                            "success"
+                                        } else {
+                                            "conflict"
+                                        };
+
+                                        let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
+                                        let status_str = builder.create_string(status_msg);
+                                        let mac_str = builder.create_string(mac);
+
+                                        let mut res_builder = crate::router_generated::RouterResponseBuilder::new(&mut builder);
+                                        res_builder.add_status(status_str);
+                                        res_builder.add_mac(mac_str);
+                                        let res = res_builder.finish();
+                                        builder.finish(res, None);
+
+                                        if let Err(net_err) = socket.send(Message::Binary(builder.finished_data().to_vec())).await {
+                                            println!("🔴 [WS ERROR] Socket died while sending response: {}", net_err);
+                                            break;
+                                        }
+                                    }
+                                },
+                                crate::router_generated::IncomingPayload::ChangeStateRequest => {
+                                    if let Some(request) = envelope.payload_as_change_state_request() {
+                                        let req_network_id = request.network_id().unwrap_or_default();
+                                        let mac = request.mac().unwrap_or_default();
+                                        let state_str = request.state().unwrap_or_default();
+
+                                        let result = sqlx::query!("UPDATE devices SET state = ? WHERE network_id = ? AND mac = ?", state_str, req_network_id, mac)
+                                            .execute(&state.db).await;
+                                        let status_msg = match result {
+                                            Ok(res) if res.rows_affected() != 0 => {
+                                                println!("🟢 [WS] Router updated device {} state to {}", mac, state_str);
+                                                "success"
+                                            },
+                                            _ => {
+                                                println!("🔴 [WS DB] Router failed to update device {}", mac);
+                                                "not_found"
+                                            }
+                                        };
+                                        let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
+                                        let status_str = builder.create_string(status_msg);
+                                        let mac_str = builder.create_string(mac);
+
+                                        let mut res_builder = crate::router_generated::RouterResponseBuilder::new(&mut builder);
+                                        res_builder.add_status(status_str);
+                                        res_builder.add_mac(mac_str);
+                                        let res = res_builder.finish();
+                                        builder.finish(res, None);
+
+                                        if let Err(net_err) = socket.send(Message::Binary(builder.finished_data().to_vec())).await {
+                                            println!("🔴 [WS ERROR] Socket died while sending state change response: {}", net_err);
+                                            break;
+                                        }
+                                    }
+                                },
+                                _ => {
+                                    println!("⚠️ [WS] Unknown Payload Type received!");
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            println!("⚠️ [SECURITY] Received malformed binary envelope! Rejecting payload.");
+                        }
+                    };
+                } else if let Ok(Message::Close(_)) = msg {
+                    println!("🔴 [WS] Router disconnected naturally.");
+                    break;
+                }
+            }
+        }
+    }
+    println!("🔴 [WS] Connection severed for Network {}.", network_id);
 }
 
 #[axum::debug_handler]
@@ -136,32 +270,6 @@ pub async fn get_single_device(State(db): State<SharedDatabase>, claims: Claims,
     }
         println!("Warning, device {} not found", payload.mac);
         Err(AppError::NotFound)
-}
-
-#[axum::debug_handler]
-pub async fn register_device(State(db): State<SharedDatabase>, _key: RouterKey, Json(payload): Json<RegisterRequest>) -> Result<Json<NetworkDevice>, AppError> {
-    println!("--> [POST] /api/devices - New MAC: {}", payload.mac);
-    let existing = sqlx::query!("SELECT 1 AS exists_flag FROM devices WHERE mac = ?", payload.mac)
-        .fetch_optional(&db)
-        .await?;
-    if existing.is_some() {
-        println!("WARNING: Device {} is already connected", payload.mac);
-        return Err(AppError::Conflict);
-    }
-    sqlx::query!("INSERT INTO devices (network_id, mac, hostname, ip, manufacturer, state, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?)", payload.network_id, payload.mac, payload.hostname, payload.ip, payload.manufacturer, "allowed", "Active Now")
-        .execute(&db)
-        .await?;
-    println!("Device {}, has been added", payload.hostname);
-    let new_device = NetworkDevice {
-        network_id: payload.network_id,
-        mac: payload.mac,
-        hostname:payload.hostname,
-        ip:payload.ip,
-        manufacturer:payload.manufacturer,
-        state:DeviceState::Allowed,
-        last_seen:"Active Now".to_string()
-    };
-    Ok(Json(new_device))
 }
 
 #[axum::debug_handler]

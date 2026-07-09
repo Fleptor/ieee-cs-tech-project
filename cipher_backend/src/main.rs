@@ -1,12 +1,16 @@
-use axum::{Router, routing::{delete, post}};
+use axum::{Router, routing::{get, post, delete}};
 use std::net::SocketAddr;
 use tower_http::cors::{Any, CorsLayer};
+use tokio::sync::broadcast;
 mod auth;
 mod handlers;
 mod models;
 use crate::handlers::*;
 
 pub type SharedDatabase = sqlx::SqlitePool;
+
+#[allow(dead_code, unused_imports, clippy::all, mismatched_lifetime_syntaxes, elided_lifetimes_in_paths, unsafe_op_in_unsafe_fn)]
+pub mod router_generated;
 
 #[tokio::main]
 async fn main() {
@@ -52,6 +56,8 @@ async fn main() {
         PRIMARY KEY (network_id, mac)
         );").execute(&db).await.unwrap();
 
+    let (tx, _rx) = broadcast::channel(100);
+    let app_state = crate::models::AppState { db, tx };
     let cors = CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any);
 
     let app = Router::new()
@@ -62,10 +68,10 @@ async fn main() {
         .route("/api/Main/change_admin",post(change_admin_of_network))
         .route("/api/get_devices", post(get_devices))
         .route("/api/get_device", post(get_single_device))
-        .route("/api/add_device", post(register_device))
         .route("/api/delete_device", delete(delete_device))
         .route("/api/change_state", post(change_state))
-        .with_state(db)
+        .route("/api/router/ws/:network_id", get(router_ws_handler))
+        .with_state(app_state)
         .layer(cors);
 
     let config = axum_server::tls_rustls::RustlsConfig::from_pem_file(
