@@ -58,16 +58,15 @@ struct dnshdr {
 // --- The Telemetry Payload ---
 // Mapped for 16-byte IPv6 compatibility (IPv4 takes the first 4 bytes)
 struct log_event {
-  __u8 src_ip[16];
-  __u8 dst_ip[16];
-  __u8 local_mac[6];
+  __u8 ip_addr[16];
+  __u8 internal_mac[6];
   __u16 protocol;
   __u16 payload_len;
   __u16 src_port;
   __u16 dst_port;
   __u8 ip_version;
   __u8 flags;
-};
+} __attribute__((packed));
 
 // --- Triage Enforcement Bitmasks ---
 #define F_PASS 1         // Bit 0: 1 = Pass, 0 = Drop

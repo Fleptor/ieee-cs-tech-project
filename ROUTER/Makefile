@@ -12,7 +12,7 @@ ebpf:
 	# We use clang with the BPF target. 
 	# -O2 is strictly required for the Linux Kernel Verifier to accept the eBPF loops/jumps
 	clang -O2 -g -target bpf -Wall -Werror \
-		-c ebpf/src/cipher.bpf.c \
+		-c ebpf/src/kernel_space.c \
 		-o ebpf/target/cipher_ebpf.o
 	
 	@echo "✅ eBPF Compilation complete! (Saved to ebpf/target/cipher_ebpf.o)"
