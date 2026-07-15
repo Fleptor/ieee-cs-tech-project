@@ -1,0 +1,5 @@
+[workspace]
+
+members = ["Router/daemon", "Server"]
+
+resolver = "2"

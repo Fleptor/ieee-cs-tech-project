@@ -1,0 +1,7 @@
+{
+    "rust-analyzer.linkedProjects": [
+        "./Router/daemon/Cargo.toml",
+        "./Server/Cargo.toml" 
+    ],
+    "git.ignoreLimitWarning": true
+}
