@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 axum = { version = "0.7", features = ["macros", "ws"] }
 axum-server = { version = "0.7", features = ["tls-rustls"] }
+rustls = { version = "0.23", features = ["ring"] }
 tokio = { version = "1.0", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -19,5 +20,6 @@ argon2 ="0.5"
 rand_core = { version = "0.6", features = ["std"] }
 dotenvy = "0.15"
 flatbuffers = "2.0.8"
-linfa = "0.7"
-linfa-clustering = "0.7"
+ndarray = "0.15.6"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+anyhow = "1.0"

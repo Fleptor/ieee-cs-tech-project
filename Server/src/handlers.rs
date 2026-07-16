@@ -1,4 +1,5 @@
 use axum::{extract::{State, Path, ws::{WebSocketUpgrade, WebSocket , Message}}, http::StatusCode, Json};
+use std::collections::HashMap;
 use crate::models::*;
 use crate::auth::*;
 use crate::SharedDatabase;
@@ -60,7 +61,48 @@ async fn handle_router_socket(mut socket: WebSocket, network_id: String, state: 
         println!("🔴 [WS ERROR] Failed to send welcome handshake: {}", e);
         return; 
     }
+    
+    // --- PUSH DYNAMIC GLOBAL THREAT INTEL ON CONNECT (FROM RAM CACHE) ---
+    let (bad_ips, bad_domains) = {
+        let intel = state.threat_intel.read().await;
+        (intel.banned_ips.clone(), intel.ad_domains.clone())
+    };
+
+    println!("🌍 [THREAT INTEL] Pushing {} IPs and {} Ad Domains to Router from Cache...", bad_ips.len(), bad_domains.len());
+    let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
+    
+    let mut ips_offsets = Vec::new();
+    for ip in &bad_ips { ips_offsets.push(builder.create_string(ip)); }
+    let ips_vec = builder.create_vector(&ips_offsets);
+    
+    let mut dom_offsets = Vec::new();
+    for dom in &bad_domains { dom_offsets.push(builder.create_string(dom)); }
+    let dom_vec = builder.create_vector(&dom_offsets);
+    
+    let intel_offset = crate::router_generated::ThreatIntelPayload::create(
+        &mut builder,
+        &crate::router_generated::ThreatIntelPayloadArgs {
+            ad_domains: Some(dom_vec),
+            banned_ips: Some(ips_vec),
+        }
+    );
+    
+    let status_str = builder.create_string("threat_intel");
+    let mut res_builder = crate::router_generated::RouterResponseBuilder::new(&mut builder);
+    res_builder.add_status(status_str);
+    res_builder.add_threat_intel(intel_offset);
+    let res = res_builder.finish();
+    builder.finish(res, None);
+    
+    if let Err(e) = socket.send(Message::Binary(builder.finished_data().to_vec())).await {
+        println!("🔴 [WS ERROR] Failed to send Threat Intel: {}", e);
+        return;
+    }
+
+    // 1. Initialize the Layer 1 ML Memory Bank for this specific router
+    let mut baselines: HashMap<String, crate::ai::NetworkBaseline> = HashMap::new();
     let mut rx = state.tx.subscribe();
+    
     loop {
         tokio::select! {
             Ok(cmd) = rx.recv() => {
@@ -164,6 +206,70 @@ async fn handle_router_socket(mut socket: WebSocket, network_id: String, state: 
                                         }
                                     }
                                 },
+                                crate::router_generated::IncomingPayload::TelemetryReport => {
+                                    if let Some(telemetry) = envelope.payload_as_telemetry_report() {
+                                        let mac = telemetry.mac().unwrap_or_default().to_string();
+                                        let network_id_req = telemetry.network_id().unwrap_or_default().to_string();
+                                        
+                                        let bytes_in = telemetry.bytes_in();
+                                        let bytes_out = telemetry.bytes_out();
+                                        let drops = telemetry.dropped_connections();
+                                        let entropy = telemetry.port_entropy_score();
+
+                                        // 1. Get or create the device's math baseline in Server RAM
+                                        let baseline = baselines.entry(mac.clone()).or_insert_with(crate::ai::NetworkBaseline::default);
+
+                                        // 2. LAYER 1: THE REFLEX (Native Rust ML - Microseconds)
+                                        let is_anomaly = baseline.process_telemetry(bytes_in, bytes_out, drops, entropy);
+
+                                        if is_anomaly {
+                                            // 3. LAYER 2: THE REASON (LLM Supervisor - Asynchronous)
+                                            let tx_clone = state.tx.clone();
+                                            let db_clone = state.db.clone();
+                                            let mac_clone = mac.clone();
+                                            let net_id_clone = network_id_req.clone();
+                                            
+                                            tokio::spawn(async move {
+                                                match crate::ai::consult_llm_supervisor(&mac_clone, bytes_in, bytes_out, drops, entropy).await {
+                                                    Ok(verdict) => {
+                                                        println!("\n🤖 [LLM VERDICT] Threat: {} | Confidence: {}%", verdict.threat_name, verdict.confidence);
+                                                        println!("📋 [LLM REPORT] {}", verdict.human_explanation);
+                                                        
+                                                        // --- 1. SAVE THE REPORT FOR THE FRONTEND (RUNTIME QUERY) ---
+                                                        let _ = sqlx::query("INSERT INTO audit_logs (network_id, mac, threat_name, confidence, explanation) VALUES (?, ?, ?, ?, ?)")
+                                                            .bind(&net_id_clone)
+                                                            .bind(&mac_clone)
+                                                            .bind(&verdict.threat_name)
+                                                            .bind(verdict.confidence as i64)
+                                                            .bind(&verdict.human_explanation)
+                                                            .execute(&db_clone).await;
+                                                        
+                                                        if verdict.should_block {
+                                                            println!("🚨 [ACTION] LLM authorized block. Isolating MAC {}...", mac_clone);
+                                                            
+                                                            // --- 2. SYNC THE SERVER DATABASE (RUNTIME QUERY) ---
+                                                            let _ = sqlx::query("UPDATE devices SET state = 'blocked' WHERE network_id = ? AND mac = ?")
+                                                                .bind(&net_id_clone)
+                                                                .bind(&mac_clone)
+                                                                .execute(&db_clone).await;
+
+                                                            // --- 3. EXECUTE THE PHYSICAL KILL ---
+                                                            let cmd = DeviceCommand {
+                                                                network_id: net_id_clone,
+                                                                mac: mac_clone.clone(),
+                                                                state: DeviceState::Blocked,
+                                                            };
+                                                            let _ = tx_clone.send(cmd);
+                                                        } else {
+                                                            println!("✅ [ACTION] LLM vetoed the Layer 1 block (False Positive Detected).");
+                                                        }
+                                                    }
+                                                    Err(e) => println!("⚠️ [LLM ERROR] Supervisor unreachable: {}", e),
+                                                }
+                                            });
+                                        }
+                                    }
+                                },
                                 _ => {
                                     println!("⚠️ [WS] Unknown Payload Type received!");
                                 }
@@ -218,7 +324,6 @@ pub async fn login_user(State(db): State<SharedDatabase>, Json(payload): Json<Us
     Err(AppError::Unauthorized)
 }
 
-// still needs work
 #[axum::debug_handler]
 pub async fn add_network_to_user(State(db): State<SharedDatabase>, claims: Claims, Json(payload): Json<Network>) -> Result<StatusCode, AppError> {
     let existing = sqlx::query!("SELECT 1 AS exists_flag FROM networks WHERE network_id = ? AND username = ?", payload.network_id, claims.username)
@@ -236,7 +341,6 @@ pub async fn add_network_to_user(State(db): State<SharedDatabase>, claims: Claim
     let _email: String = sqlx::query_scalar!("SELECT email FROM users WHERE username = ?", username)
         .fetch_one(&db)
         .await?;
-    //send_email(email);
     return Ok(StatusCode::ACCEPTED);
 }
 

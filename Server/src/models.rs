@@ -2,7 +2,8 @@ use axum::http::StatusCode;
 use jsonwebtoken::errors::Error;
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use tokio::sync::broadcast;
+use std::sync::Arc;
+use tokio::sync::{broadcast, RwLock};
 
 type SharedDatabase = sqlx::SqlitePool;
 
@@ -80,6 +81,7 @@ pub struct DeviceCommand {
 pub struct AppState {
     pub db: sqlx::SqlitePool,
     pub tx: broadcast::Sender<DeviceCommand>,
+    pub threat_intel: Arc<RwLock<crate::ai::GlobalThreatIntel>>,
 }
 impl axum::extract::FromRef<AppState> for SharedDatabase {
     fn from_ref(state: &AppState) -> Self {

@@ -55,18 +55,28 @@ struct dnshdr {
   __be16 arcount;
 } __attribute__((packed));
 
+struct flow_key {
+__u8 external_ip[16];
+__u8 internal_mac[6];
+__u16 src_port;
+__u16 dst_port;
+__u8 protocol;
+__u8 pad;
+} attribute((packed));
+
 // --- The Telemetry Payload ---
 // Mapped for 16-byte IPv6 compatibility (IPv4 takes the first 4 bytes)
 struct log_event {
-  __u8 ip_addr[16];
-  __u8 internal_mac[6];
-  __u16 protocol;
-  __u16 payload_len;
-  __u16 src_port;
-  __u16 dst_port;
-  __u8 ip_version;
-  __u8 flags;
-} __attribute__((packed));
+__u8 ip_addr[16];
+__u8 internal_mac[6];
+__u16 payload_len;
+__u16 src_port;
+__u16 dst_port;
+__u8 layer_4_protocol;
+__u8 tcp_flags;
+__u8 ip_version;
+__u8 flags;
+} attribute((packed));
 
 // --- Triage Enforcement Bitmasks ---
 #define F_PASS 1         // Bit 0: 1 = Pass, 0 = Drop
@@ -76,5 +86,6 @@ struct log_event {
 #define F_LEGACY_DROP 16 // Bit 4: Legacy Hard Drop (NBT-NS)
 #define F_HEURISTIC 32   // Bit 5: Heuristic Telemetry (mDNS/SSDP)
 #define F_INFRA_ALERT 64 // Bit 6: Infrastructure Hijack (Rogue DHCP)
+#define F_AD_DROP 128    // Bit 7: Bloom Filter Ad/Telemetry Drop
 
 #endif // SHARED_DEFS_H

@@ -57,13 +57,77 @@ struct {
     __type(value, __u8);
 } MAC_list SEC(".maps");
 
-static __always_inline int log_v4(__u16 protocol, __u8 *internal_mac, __u32 ip_addr, __u16 src_port, __u16 dst_port,__u16 payload_len, __u8 flags) {
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, __u64);
+} Heartbeat SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 65536);
+    __type(key, struct flow_key);
+    __type(value, __u64);
+} fast_path_vip SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_BLOOM_FILTER);
+    __uint(max_entries, 500000);
+    __type(value, __u32);
+} Ad_Bloom_Filter SEC(".maps");
+
+static __always_inline int is_ad_domain(void *udph_ptr, void *data_end) {
+    struct udphdr *udph = udph_ptr;
+    void *dns_payload = (void *)(udph + 1);
+
+    if (unlikely((void *)((__u8 *)dns_payload + 12) > data_end)) return 0;
+
+    __u32 hash = 2166136261U;
+    __u8 *cursor = (__u8 *)dns_payload + 12;
+
+    #pragma unroll
+    for (int i = 0; i < 64; i++) {
+        if ((void *)(cursor + 1) > data_end) break;
+        __u8 val = *cursor;
+        if (val == 0) break;
+        if (val >= 'A' && val <= 'Z') val |= 0x20;
+
+        hash ^= val;
+        hash *= 16777619U;
+        cursor++;
+    }
+
+    if (bpf_map_peek_elem(&Ad_Bloom_Filter, &hash) == 0) return 1; 
+    return 0;
+}
+
+static __always_inline int log_v4(__u8 *internal_mac, __u32 ip_addr, __u16 src_port, __u16 dst_port, __u16 payload_len, __u8 layer_4_protocol, __u8 tcp_flags, __u8 flags) {
+    struct flow_key key;
+    __builtin_memset(&key, 0, sizeof(key));
+    __builtin_memcpy(key.external_ip, &ip_addr, 4);
+    __builtin_memcpy(key.internal_mac, internal_mac, 6);
+    key.src_port = src_port;
+    key.dst_port = dst_port;
+    key.protocol = layer_4_protocol;
+
+    __u64 *pkt_count = bpf_map_lookup_elem(&fast_path_vip, &key);
+    if (pkt_count) {
+        __sync_fetch_and_add(pkt_count, 1);
+
+        if (*pkt_count % 10000 != 0) {
+            if (flags & 1) return XDP_PASS;
+            return XDP_DROP;
+        }
+    }
+
     struct log_event *ev = bpf_ringbuf_reserve(&events, sizeof(*ev), 0);
     if (likely(ev)) {
         __builtin_memset(ev, 0, sizeof(*ev));
         ev->ip_version = 4;
         ev->flags = flags;
-        ev->protocol = protocol;
+        ev->layer_4_protocol = layer_4_protocol;
+        ev->tcp_flags = tcp_flags;
         ev->src_port = src_port;
         ev->dst_port = dst_port;
         ev->payload_len = payload_len;
@@ -76,13 +140,32 @@ static __always_inline int log_v4(__u16 protocol, __u8 *internal_mac, __u32 ip_a
     return XDP_DROP;
 }
 
-static __always_inline int log_v6(__u16 protocol, __u8 *internal_mac, void *ip_addr, __u16 src_port, __u16 dst_port,__u16 payload_len, __u8 flags) {
+static __always_inline int log_v6(__u8 *internal_mac, void *ip_addr, __u16 src_port, __u16 dst_port, __u16 payload_len, __u8 layer_4_protocol, __u8 tcp_flags, __u8 flags) {
+    struct flow_key key;
+    __builtin_memset(&key, 0, sizeof(key));
+    __builtin_memcpy(key.external_ip, &ip_addr, 4);
+    __builtin_memcpy(key.internal_mac, internal_mac, 6);
+    key.src_port = src_port;
+    key.dst_port = dst_port;
+    key.protocol = layer_4_protocol;
+
+    __u64 *pkt_count = bpf_map_lookup_elem(&fast_path_vip, &key);
+    if (pkt_count) {
+        __sync_fetch_and_add(pkt_count, 1);
+
+        if (*pkt_count % 10000 != 0) {
+            if (flags & 1) return XDP_PASS;
+            return XDP_DROP;
+        }
+    }
+
     struct log_event *ev = bpf_ringbuf_reserve(&events, sizeof(*ev), 0);
     if (likely(ev)) {
         __builtin_memset(ev, 0, sizeof(*ev));
         ev->ip_version = 6;
         ev->flags = flags;
-        ev->protocol = protocol;
+        ev->layer_4_protocol = layer_4_protocol;
+        ev->tcp_flags = tcp_flags;
         ev->src_port = src_port;
         ev->dst_port = dst_port;
         ev->payload_len = payload_len;
@@ -115,18 +198,20 @@ static __always_inline int Handle_TCP(struct iphdr *iph, void *data_end, __u8 *i
     __u32 ip_addr = (flags & F_WAN_OUT) ? iph->daddr : iph->saddr;
     __u16 src_port = bpf_ntohs(tcph->source);
     __u16 dst_port = bpf_ntohs(tcph->dest);
+    __u8 tcp_flags = ((__u8 *)tcph)[13];
 
-    if (unlikely((!tcph->syn && !tcph->ack && !tcph->fin && !tcph->rst && !tcph->psh && !tcph->urg) ||
-        (tcph->syn && tcph->fin) ||
-        (tcph->fin && tcph->psh && tcph->urg)))
-        return log_v4(IPPROTO_TCP, internal_mac, ip_addr, src_port, dst_port, payload_len, flags);
+    // ZERO-COST ANOMALY DETECTION: 0x3F = All 6 control flags (Null Scan), 0x03 = SYN | FIN (SYN/FIN Scan), 0x29 = URG | PSH | FIN (Xmas Scan)
+    if (unlikely((tcp_flags & 0x3F) == 0 || 
+                 (tcp_flags & 0x03) == 0x03 || 
+                 (tcp_flags & 0x29) == 0x29))
+        return log_v4(internal_mac, ip_addr, src_port, dst_port, payload_len, IPPROTO_TCP, tcp_flags, flags | F_ANOMALY);
 
     switch (dst_port) {
         case PORT_FTP_DATA:
         case PORT_FTP_CMD:
         case PORT_TELNET:
         case PORT_NETBIOS_TCP:
-            return log_v4(IPPROTO_TCP, internal_mac, ip_addr, src_port, dst_port, payload_len, flags | F_LEGACY_DROP);
+            return log_v4(internal_mac, ip_addr, src_port, dst_port, payload_len, IPPROTO_TCP, tcp_flags, flags | F_LEGACY_DROP);
         case PORT_HTTP:
         case PORT_HTTPS:
         case PORT_SMB:
@@ -138,9 +223,9 @@ static __always_inline int Handle_TCP(struct iphdr *iph, void *data_end, __u8 *i
         case PORT_POSTGRES:
         case PORT_SSH:
         case PORT_RDP:
-            return log_v4(IPPROTO_TCP, internal_mac, ip_addr, src_port, dst_port, payload_len, flags | F_PASS | F_HEURISTIC);
+            return log_v4(internal_mac, ip_addr, src_port, dst_port, payload_len, IPPROTO_TCP, tcp_flags, flags | F_PASS | F_HEURISTIC);
         default:
-            return log_v4(IPPROTO_TCP, internal_mac, ip_addr, src_port, dst_port, payload_len, flags | F_PASS);
+            return log_v4(internal_mac, ip_addr, src_port, dst_port, payload_len, IPPROTO_TCP, tcp_flags, flags | F_PASS);
     }
 }
 
@@ -162,18 +247,20 @@ static __always_inline int Handle_TCP_v6(struct ipv6hdr *ipv6h, __u16 ext_len, v
     void *ip_addr = (flags & F_WAN_OUT) ? &ipv6h->daddr : &ipv6h->saddr;
     __u16 src_port = bpf_ntohs(tcph->source);
     __u16 dst_port = bpf_ntohs(tcph->dest);
+    __u8 tcp_flags = ((__u8 *)tcph)[13];
 
-    if (unlikely((!tcph->syn && !tcph->ack && !tcph->fin && !tcph->rst && !tcph->psh && !tcph->urg) ||
-        (tcph->syn && tcph->fin) ||
-        (tcph->fin && tcph->psh && tcph->urg)))
-        return log_v6(IPPROTO_TCP, internal_mac, ip_addr, src_port, dst_port, payload_len, flags);
+    // ZERO-COST ANOMALY DETECTION: 0x3F = All 6 control flags (Null Scan), 0x03 = SYN | FIN (SYN/FIN Scan), 0x29 = URG | PSH | FIN (Xmas Scan)
+    if (unlikely((tcp_flags & 0x3F) == 0 || 
+                 (tcp_flags & 0x03) == 0x03 || 
+                 (tcp_flags & 0x29) == 0x29))
+        return log_v6(internal_mac, ip_addr, src_port, dst_port, payload_len, IPPROTO_TCP, tcp_flags, flags | F_ANOMALY);
 
     switch (dst_port) {
         case PORT_FTP_DATA:
         case PORT_FTP_CMD:
         case PORT_TELNET:
         case PORT_NETBIOS_TCP:
-            return log_v6(IPPROTO_TCP, internal_mac, ip_addr, src_port, dst_port, payload_len, flags | F_LEGACY_DROP);
+            return log_v6(internal_mac, ip_addr, src_port, dst_port, payload_len, IPPROTO_TCP, tcp_flags, flags | F_LEGACY_DROP);
         case PORT_HTTP:
         case PORT_HTTPS:
         case PORT_SMB:
@@ -185,9 +272,9 @@ static __always_inline int Handle_TCP_v6(struct ipv6hdr *ipv6h, __u16 ext_len, v
         case PORT_POSTGRES:
         case PORT_SSH:
         case PORT_RDP:
-            return log_v6(IPPROTO_TCP, internal_mac, ip_addr, src_port, dst_port, payload_len, flags | F_PASS | F_HEURISTIC);
+            return log_v6(internal_mac, ip_addr, src_port, dst_port, payload_len, IPPROTO_TCP, tcp_flags, flags | F_PASS | F_HEURISTIC);
         default:
-            return log_v6(IPPROTO_TCP, internal_mac, ip_addr, src_port, dst_port, payload_len, flags | F_PASS);
+            return log_v6(internal_mac, ip_addr, src_port, dst_port, payload_len, IPPROTO_TCP, tcp_flags, flags | F_PASS);
     }
 }
 
@@ -199,7 +286,7 @@ static __always_inline int Handle_UDP(struct iphdr *iph, void *data_end, __u8 *i
     __u16 src_port = bpf_ntohs(udph->source);
     __u16 dst_port = bpf_ntohs(udph->dest);
     if (unlikely(bpf_ntohs(udph->len) < sizeof(struct udphdr)))
-        return log_v4(IPPROTO_UDP, internal_mac, ip_addr, src_port, dst_port, 0, flags | F_ANOMALY);
+        return log_v4(internal_mac, ip_addr, src_port, dst_port, 0, IPPROTO_UDP, 0, flags | F_ANOMALY);
     __u16 payload_len = bpf_ntohs(udph->len) - sizeof(struct udphdr);
 
     switch (dst_port) {
@@ -208,30 +295,33 @@ static __always_inline int Handle_UDP(struct iphdr *iph, void *data_end, __u8 *i
             if (unlikely((void *)(dnsh + 1) > data_end))
                 return XDP_DROP;
             if (bpf_ntohs(dnsh->qdcount) == 1)
-                return log_v4(IPPROTO_UDP, internal_mac, ip_addr, src_port, dst_port, payload_len, flags);
-            return log_v4(IPPROTO_UDP, internal_mac, ip_addr, src_port, dst_port, payload_len, flags | F_ANOMALY);
+                return log_v4(internal_mac, ip_addr, src_port, dst_port, payload_len, IPPROTO_UDP, 0, flags);
+            return log_v4(internal_mac, ip_addr, src_port, dst_port, payload_len, IPPROTO_UDP, 0, flags | F_ANOMALY);
         }
-    case PORT_NBT_NS:
-    case PORT_TFTP:
-        return log_v4(IPPROTO_UDP, internal_mac, ip_addr, src_port, dst_port, payload_len, flags | F_LEGACY_DROP);
-    case PORT_SNMP:
-    case PORT_SNMP_TRAP:
-    case PORT_QUIC:
-    case PORT_DNS:
-    case PORT_MDNS:
-    case PORT_SSDP:
-    case PORT_WS_DISC:
-        return log_v4(IPPROTO_UDP, internal_mac, ip_addr, src_port, dst_port, payload_len, flags | F_PASS | F_HEURISTIC);
-    case PORT_DHCP_CLIENT: {
-        if (likely(src_port == PORT_DHCP_SERVER)) {
-            if (flags & F_WAN_IN)
-                return log_v4(IPPROTO_UDP, internal_mac, ip_addr, src_port, dst_port, payload_len, flags | F_PASS);
-            return log_v4(IPPROTO_UDP, internal_mac, ip_addr, src_port, dst_port, payload_len, flags | F_INFRA_ALERT);
+        case PORT_NBT_NS:
+        case PORT_TFTP:
+            return log_v4(internal_mac, ip_addr, src_port, dst_port, payload_len, IPPROTO_UDP, 0, flags | F_LEGACY_DROP);
+            case PORT_DNS:
+                if ((flags & F_WAN_OUT) && is_ad_domain(udph, data_end)) {
+                    return log_v4(internal_mac, ip_addr, src_port, dst_port, payload_len, IPPROTO_UDP, 0, flags | F_AD_DROP);
+                }
+        case PORT_SNMP:
+        case PORT_SNMP_TRAP:
+        case PORT_QUIC:
+        case PORT_MDNS:
+        case PORT_SSDP:
+        case PORT_WS_DISC:
+            return log_v4(internal_mac, ip_addr, src_port, dst_port, payload_len, IPPROTO_UDP, 0, flags | F_PASS | F_HEURISTIC);
+        case PORT_DHCP_CLIENT: {
+            if (likely(src_port == PORT_DHCP_SERVER)) {
+                if (flags & F_WAN_IN)
+                    return log_v4(internal_mac, ip_addr, src_port, dst_port, payload_len, IPPROTO_UDP, 0, flags | F_PASS);
+                return log_v4(internal_mac, ip_addr, src_port, dst_port, payload_len, IPPROTO_UDP, 0, flags | F_INFRA_ALERT);
+            }
+            return log_v4(internal_mac, ip_addr, src_port, dst_port, payload_len, IPPROTO_UDP, 0, flags | F_PASS);
         }
-        return log_v4(IPPROTO_UDP, internal_mac, ip_addr, src_port, dst_port, payload_len, flags | F_PASS);
-    }
-    default:
-        return log_v4(IPPROTO_UDP, internal_mac, ip_addr, src_port, dst_port, payload_len, flags | F_PASS);
+        default:
+            return log_v4(internal_mac, ip_addr, src_port, dst_port, payload_len, IPPROTO_UDP, 0, flags | F_PASS);
     }
 }
 
@@ -243,7 +333,7 @@ static __always_inline int Handle_UDP_v6(struct ipv6hdr *ipv6h, __u16 ext_len, v
     __u16 src_port = bpf_ntohs(udph->source);
     __u16 dst_port = bpf_ntohs(udph->dest);
     if (unlikely(bpf_ntohs(udph->len) < sizeof(struct udphdr)))
-        return log_v6(IPPROTO_UDP, internal_mac, ip_addr, src_port, dst_port, 0, flags | F_ANOMALY);
+        return log_v6(internal_mac, ip_addr, src_port, dst_port, 0, IPPROTO_UDP, 0, flags | F_ANOMALY);
     __u16 payload_len = bpf_ntohs(udph->len) - sizeof(struct udphdr);
 
     switch (dst_port) {
@@ -252,29 +342,33 @@ static __always_inline int Handle_UDP_v6(struct ipv6hdr *ipv6h, __u16 ext_len, v
             if (unlikely((void *)(dnsh + 1) > data_end))
                 return XDP_DROP;
             if (bpf_ntohs(dnsh->qdcount) == 1)
-                return log_v6(IPPROTO_UDP, internal_mac, ip_addr, src_port, dst_port, payload_len, flags);
-            return log_v6(IPPROTO_UDP, internal_mac, ip_addr, src_port, dst_port, payload_len, flags | F_ANOMALY);
+                return log_v6(internal_mac, ip_addr, src_port, dst_port, payload_len, IPPROTO_UDP, 0, flags);
+            return log_v6(internal_mac, ip_addr, src_port, dst_port, payload_len, IPPROTO_UDP, 0, flags | F_ANOMALY);
         }
-    case PORT_NBT_NS:
-    case PORT_TFTP:
-        return log_v6(IPPROTO_UDP, internal_mac, ip_addr, src_port, dst_port, payload_len, flags | F_LEGACY_DROP);
-    case PORT_SNMP:
-    case PORT_SNMP_TRAP:
-    case PORT_DNS:
-    case PORT_MDNS:
-    case PORT_SSDP:
-    case PORT_WS_DISC:
-        return log_v6(IPPROTO_UDP, internal_mac, ip_addr, src_port, dst_port, payload_len, flags | F_PASS | F_HEURISTIC);
-    case PORT_DHCP_CLIENT: {
-        if (likely(src_port == PORT_DHCP_SERVER)) {
-            if (flags & F_WAN_IN)
-                return log_v6(IPPROTO_UDP, internal_mac, ip_addr, src_port, dst_port, payload_len, flags | F_PASS);
-            return log_v6(IPPROTO_UDP, internal_mac, ip_addr, src_port, dst_port, payload_len, flags | F_INFRA_ALERT);
+        case PORT_NBT_NS:
+        case PORT_TFTP:
+            return log_v6(internal_mac, ip_addr, src_port, dst_port, payload_len, IPPROTO_UDP, 0, flags | F_LEGACY_DROP);
+        case PORT_DNS:
+            if ((flags & F_WAN_OUT) && is_ad_domain(udph, data_end)) {
+                return log_v6(internal_mac, ip_addr, src_port, dst_port, payload_len, IPPROTO_UDP, 0, flags | F_AD_DROP);
+            }
+        case PORT_SNMP:
+        case PORT_SNMP_TRAP:
+        case PORT_QUIC:
+        case PORT_MDNS:
+        case PORT_SSDP:
+        case PORT_WS_DISC:
+            return log_v6(internal_mac, ip_addr, src_port, dst_port, payload_len, IPPROTO_UDP, 0, flags | F_PASS | F_HEURISTIC);
+        case PORT_DHCP_CLIENT: {
+            if (likely(src_port == PORT_DHCP_SERVER)) {
+                if (flags & F_WAN_IN)
+                    return log_v6(internal_mac, ip_addr, src_port, dst_port, payload_len, IPPROTO_UDP, 0, flags | F_PASS);
+                return log_v6(internal_mac, ip_addr, src_port, dst_port, payload_len, IPPROTO_UDP, 0, flags | F_INFRA_ALERT);
+            }
+            return log_v6(internal_mac, ip_addr, src_port, dst_port, payload_len, IPPROTO_UDP, 0, flags | F_PASS);
         }
-        return log_v6(IPPROTO_UDP, internal_mac, ip_addr, src_port, dst_port, payload_len, flags | F_PASS);
-    }
-    default:
-        return log_v6(IPPROTO_UDP, internal_mac, ip_addr, src_port, dst_port, payload_len, flags | F_PASS);
+        default:
+            return log_v6(internal_mac, ip_addr, src_port, dst_port, payload_len, IPPROTO_UDP, 0, flags | F_PASS);
     }
 }
 
@@ -289,8 +383,8 @@ static __always_inline int Handle_ICMP(struct iphdr *iph, void *data_end, __u8 *
     __u16 payload_len = ip_tot_len - ip_hdr_len - sizeof(struct icmphdr);
     __u32 ip_addr = (flags & F_WAN_OUT) ? iph->daddr : iph->saddr;
     if (unlikely(payload_len > 1000))
-        return log_v4(IPPROTO_ICMP, internal_mac, ip_addr, 0, 0, payload_len, flags | F_ANOMALY);
-    return log_v4(IPPROTO_ICMP, internal_mac, ip_addr, 0, 0, payload_len, flags | F_PASS);
+        return log_v4(internal_mac, ip_addr, 0, 0, payload_len, IPPROTO_ICMP, 0, flags | F_ANOMALY);
+    return log_v4(internal_mac, ip_addr, 0, 0, payload_len, IPPROTO_ICMP, 0, flags | F_PASS);
 }
 
 static __always_inline int Handle_ICMP_v6(struct ipv6hdr *ipv6h, __u16 ext_len, void *data_end, __u8 *internal_mac, __u8 flags) {
@@ -303,12 +397,29 @@ static __always_inline int Handle_ICMP_v6(struct ipv6hdr *ipv6h, __u16 ext_len, 
     __u16 payload_len = ipv6_payload_len - sizeof(struct icmp6hdr) - ext_len;
     void *ip_addr = (flags & F_WAN_OUT) ? &ipv6h->daddr : &ipv6h->saddr;
     if (unlikely(payload_len > 1000))
-        return log_v6(IPPROTO_ICMPV6, internal_mac, ip_addr, 0, 0, payload_len, flags | F_ANOMALY);
-    return log_v6(IPPROTO_ICMPV6, internal_mac, ip_addr, 0, 0, payload_len, flags | F_PASS);
+        return log_v6(internal_mac, ip_addr, 0, 0, payload_len, IPPROTO_ICMPV6, 0, flags | F_ANOMALY);
+    return log_v6(internal_mac, ip_addr, 0, 0, payload_len, IPPROTO_ICMPV6, 0, flags | F_PASS);
 }
 
 SEC("xdp")
 int xdp_router_prog(struct xdp_md *ctx) {
+
+    __u32 hb_key = 0;
+    __u64 *last_hb = bpf_map_lookup_elem(&Heartbeat, &hb_key);
+    bool fail_open = false;
+
+    if (likely(last_hb)) {
+        __u64 current_time = bpf_ktime_get_ns();
+        if (*last_hb == 0) {
+            // Rust just pinged us! Reset the clock to the current kernel time.
+            *last_hb = current_time; 
+        } else if (current_time - *last_hb > 15000000000ULL) {
+            // 15 Seconds have passed! The Rust Daemon has crashed. 
+            // Activate Fail-Open mode to keep the network alive.
+            fail_open = true; 
+        }
+    }
+
     void *data = (void *)(long)ctx->data;
     void *data_end = (void *)(long)ctx->data_end;
 

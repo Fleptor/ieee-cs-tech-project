@@ -2,6 +2,7 @@ use axum::{Router, routing::{get, post, delete}};
 use std::net::SocketAddr;
 use tower_http::cors::{Any, CorsLayer};
 use tokio::sync::broadcast;
+mod ai;
 mod auth;
 mod handlers;
 mod models;
@@ -14,9 +15,8 @@ pub mod router_generated;
 
 #[tokio::main]
 async fn main() {
-    
+    let _ = rustls::crypto::ring::default_provider().install_default();
     dotenvy::dotenv().ok();
-    
     auth::init_secrets();
 
     let options = sqlx::sqlite::SqliteConnectOptions::new()
@@ -56,8 +56,43 @@ async fn main() {
         PRIMARY KEY (network_id, mac)
         );").execute(&db).await.unwrap();
 
+     sqlx::query!("
+        CREATE TABLE IF NOT EXISTS audit_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        network_id TEXT NOT NULL,
+        mac TEXT NOT NULL,
+        threat_name TEXT NOT NULL,
+        confidence INTEGER NOT NULL,
+        explanation TEXT NOT NULL,
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        );").execute(&db).await.unwrap();
+
+    let threat_intel = std::sync::Arc::new(tokio::sync::RwLock::new(crate::ai::GlobalThreatIntel {
+        banned_ips: vec!["185.15.59.224".to_string(), "45.133.1.106".to_string()],
+        ad_domains: vec!["telemetry.malware.com".to_string(), "trackers.ad-network.com".to_string()],
+    }));
+
+    let intel_cache_clone = threat_intel.clone();
+    tokio::spawn(async move {
+        println!("🕒 [CRON] Global Threat Intel background updater started.");
+        // Wake up every 12 hours
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60 * 60 * 12)); 
+        loop {
+            interval.tick().await;
+            match crate::ai::fetch_global_threat_intel().await {
+                Ok(new_intel) => {
+                    println!("✅ [CRON] Successfully pulled new Threat Intel from Claude!");
+                    // Acquire exclusive write lock to update the memory
+                    let mut cache = intel_cache_clone.write().await;
+                    *cache = new_intel;
+                }
+                Err(e) => println!("⚠️ [CRON] Failed to update Threat Intel: {}", e),
+            }
+        }
+    });
+
     let (tx, _rx) = broadcast::channel(100);
-    let app_state = crate::models::AppState { db, tx };
+    let app_state = crate::models::AppState { db, tx, threat_intel};
     let cors = CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any);
 
     let app = Router::new()

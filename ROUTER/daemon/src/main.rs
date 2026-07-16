@@ -1,7 +1,7 @@
 use anyhow::Context;
 use aya::Ebpf;
 use aya::programs::{xdp::XdpMode, Xdp};
-use aya::maps::{RingBuf, Array, HashMap as BpfHashMap};
+use aya::maps::{RingBuf, Array, HashMap as BpfHashMap, BloomFilter};
 use tokio::signal;
 use std::mem;
 use std::ffi::CString;
@@ -21,29 +21,33 @@ use tokio_util::sync::CancellationToken;
 
 // Assuming you ran `make flatbuffers` and the generated file is in src/
 #[allow(dead_code, unused_imports, clippy::all, mismatched_lifetime_syntaxes, elided_lifetimes_in_paths, unsafe_op_in_unsafe_fn)]
-#[path = "schema_generated.rs"]
-mod schema_generated;
-use schema_generated::*;
+#[path = "router_generated.rs"]
+mod router_generated;
+use router_generated::*;
 
 // --- THE ACTOR PATTERN COMMAND ENUM ---
 #[derive(Debug)]
 enum ExecutionCommand {
     BlockMac([u8; 6], String),
     AllowMac([u8; 6]),
+    PromoteVip([u8; 28]),
+    UpdateAdList(Vec<String>),
+    UpdateBannedIps(Vec<IpAddr>)
 }
 
 // 1. The API Boundary: The Optimized 32-Byte Struct
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy)]
 pub struct LogEvent {
-    pub external_ip: [u8; 16],   
-    pub internal_mac: [u8; 6],   
-    pub layer_4_protocol: u16,   
-    pub payload_len: u16,        
-    pub src_port: u16,           
-    pub dst_port: u16,           
-    pub layer_3_protocol: u8,    
-    pub flags: u8,               
+    pub external_ip: [u8; 16],
+    pub payload_len: u16,
+    pub src_port: u16,
+    pub dst_port: u16,
+    pub internal_mac: [u8; 6],
+    pub layer_4_protocol: u8,
+    pub tcp_flags: u8,
+    pub layer_3_protocol: u8,
+    pub flags: u8,
 } 
 
 // 2A. The Short-Term AI Aggregator (Wiped every 10s for the Cloud)
@@ -52,6 +56,8 @@ struct DeviceTotals {
     bytes_out: u64,
     unique_external_ips: HyperLogLog,
     port_counts: FxHashMap<u16, u32>,
+    syn_count: u32,
+    rst_count: u32,
     total_connections: u32,
     passed_connections: u32,
     dropped_connections: u32,
@@ -67,6 +73,8 @@ impl Default for DeviceTotals {
             bytes_out: 0,
             unique_external_ips: HyperLogLog::new(0.05), 
             port_counts: FxHashMap::default(),
+            syn_count: 0,
+            rst_count: 0,
             total_connections: 0,
             passed_connections: 0,
             dropped_connections: 0,
@@ -83,6 +91,7 @@ struct TcpSession {
     start_time: time::Instant,
     last_seen: time::Instant,
     bytes_transferred: u64,
+    is_vip: bool
 }
 
 // 2C. The Master State Wrapper
@@ -182,10 +191,41 @@ async fn main() -> Result<(), anyhow::Error> {
     // --- THE GLOBAL AI MEMORY BANK ---
     let telemetry_state: Arc<Mutex<FxHashMap<[u8; 6], DeviceState>>> = Arc::new(Mutex::new(FxHashMap::default()));
 
+    let mut heartbeat_map: Array<_, u64> = Array::try_from(bpf.take_map("Heartbeat").expect("Heartbeat map not found"))
+        .context("Failed to map Heartbeat array")?;
+    
+    let ct_hb = cancel_token.clone();
+    let handle_hb = tokio::spawn(async move {
+        println!("🫀 Watchdog Thread Started...");
+        let mut ticker = interval(Duration::from_secs(5));
+        loop {
+            tokio::select! {
+                _ = ct_hb.cancelled() => {
+                    println!("🛑 Watchdog Thread spinning down...");
+                    break;
+                }
+                _ = ticker.tick() => {
+                    // Writing 0 tells the eBPF kernel code to reset its internal timer!
+                    if let Err(e) = heartbeat_map.set(0, 0, 0) {
+                        println!("⚠️ [WATCHDOG] Failed to ping kernel: {}", e);
+                    }
+                }
+            }
+        }
+    });
+
     // --- THREAD 0: THE EXECUTIONER (eBPF Map Manager) ---
     let mut mac_list: BpfHashMap<_, [u8; 6], u8> = BpfHashMap::try_from(bpf.take_map("MAC_list").expect("MAC_list map not found"))
         .context("Failed to map MAC_list")?;
-    
+    let mut vip_map: BpfHashMap<_, [u8; 28], u64> = BpfHashMap::try_from(bpf.take_map("fast_path_vip").expect("fast_path_vip map not found"))
+        .context("Failed to map fast_path_vip")?;
+    let mut ad_filter: BloomFilter<_, u32> = BloomFilter::try_from(bpf.take_map("Ad_Bloom_Filter").expect("Ad_Bloom_Filter map not found"))
+        .context("Failed to map Ad_Bloom_Filter")?;
+    let mut blocked_ipv4: BpfHashMap<_, u32, u32> = BpfHashMap::try_from(bpf.take_map("Blocked_IPV4s").expect("Blocked_IPV4s map not found"))
+        .context("Failed to map Blocked_IPV4s")?;
+    let mut blocked_ipv6: BpfHashMap<_, [u8; 16], u32> = BpfHashMap::try_from(bpf.take_map("Blocked_IPV6s").expect("Blocked_IPV6s map not found"))
+        .context("Failed to map Blocked_IPV6s")?;
+
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<ExecutionCommand>(100);
     let ct_0 = cancel_token.clone();
 
@@ -210,6 +250,54 @@ async fn main() -> Result<(), anyhow::Error> {
                             ExecutionCommand::AllowMac(mac) => {
                                 let _ = mac_list.remove(&mac);
                                 println!("✅ [EXECUTIONER] Device restored to network.");
+                            }
+                            ExecutionCommand::PromoteVip(key) => {
+                                // Initialize the packet counter to 0 in the kernel map
+                                if let Err(e) = vip_map.insert(key, 0u64, 0) {
+                                    println!("🔴 [eBPF ERROR] Failed to promote VIP flow: {}", e);
+                                } else {
+                                    println!("🐘 [ELEPHANT FLOW] 50MB+ Transfer Detected. Flow promoted to VIP Fast Path! CPU cycles bypassed.");
+                                }
+                            }
+                            ExecutionCommand::UpdateAdList(domains) => {
+                                let mut count = 0;
+                                for domain in domains {
+                                    let mut hash: u32 = 2166136261;
+                                    // Parse flat "ad.com" into DNS wire format "\x02ad\x03com" and hash it
+                                    for part in domain.split('.') {
+                                        hash ^= part.len() as u32;
+                                        hash = hash.wrapping_mul(16777619);
+                                        for byte in part.bytes() {
+                                            let mut val = byte;
+                                            if val >= b'A' && val <= b'Z' { val |= 0x20; }
+                                            hash ^= val as u32;
+                                            hash = hash.wrapping_mul(16777619);
+                                        }
+                                    }
+                                    // Insert the domain hash into the eBPF Bloom Filter
+                                    let _ = ad_filter.insert(hash, 0);
+                                    count += 1;
+                                }
+                                println!("🛑 [BLOOM FILTER] Successfully loaded {} Ad/Tracker Domains into kernel memory.", count);
+                            }
+                            ExecutionCommand::UpdateBannedIps(ips) => {
+                                let mut v4_count = 0;
+                                let mut v6_count = 0;
+                                for ip in ips {
+                                    match ip {
+                                        IpAddr::V4(ipv4) => {
+                                            // from_ne_bytes elegantly maps the Rust IP exactly how the C kernel reads it in memory!
+                                            let ip_u32 = u32::from_ne_bytes(ipv4.octets());
+                                            let _ = blocked_ipv4.insert(ip_u32, 1u32, 0);
+                                            v4_count += 1;
+                                        }
+                                        IpAddr::V6(ipv6) => {
+                                            let _ = blocked_ipv6.insert(ipv6.octets(), 1u32, 0);
+                                            v6_count += 1;
+                                        }
+                                    }
+                                }
+                                println!("🌍 [THREAT INTEL] Loaded {} IPv4s and {} IPv6s into Global Ban Maps.", v4_count, v6_count);
                             }
                         }
                     }
@@ -243,7 +331,8 @@ async fn main() -> Result<(), anyhow::Error> {
 
                     let external_ip = event.external_ip;                    
                     let mac = event.internal_mac;
-                    let l4_proto = event.layer_4_protocol; 
+                    let l4_proto = event.layer_4_protocol;
+                    let tcp_flags = event.tcp_flags;
                     let payload = event.payload_len;
                     let src_port = event.src_port;
                     let dst_port = event.dst_port;
@@ -292,24 +381,58 @@ async fn main() -> Result<(), anyhow::Error> {
                         should_ban = true;
                         ban_reason = "Infrastructure Hijack (Rogue DHCP)";
                     }
+                    if flags & 128 != 0 {
+                        let mac_str = format!("{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+                        println!("🚫 [SINKHOLE] {} attempted to query a blocked domain (DNS request annihilated).", mac_str);
+                    }
                     if device.totals.anomaly_flags_count > 500 {
                         should_ban = true;
                         ban_reason = "Volumetric Anomaly Flood (Tripwire Exceeded)";
                     }
 
-                    // 2. PILLAR 6: TCP Session Tracking (Long-Term)
                     if l4_proto == 6 {
+                        if (tcp_flags & 0x02) != 0 {
+                            device.totals.syn_count += 1;
+                        }
+                        if (tcp_flags & 0x04) != 0{
+                            device.totals.rst_count += 1;
+                        }
+
+                        // PILLAR 4: SYN/RST Anomaly Detection (Port Scans / Lateral Movement)
+                        if device.totals.syn_count > 50 {
+                            let anomaly_ratio = (device.totals.rst_count as f64) / (device.totals.syn_count as f64 + 1.0);
+                            if anomaly_ratio > 0.6 {
+                                let mac_str = format!("{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+                                println!("🚨 [PILLAR 4] TCP Scan detected from {}! (RST/SYN Ratio: {:.2})", mac_str, anomaly_ratio);
+                                should_ban = true;
+                                ban_reason = "TCP Session Health: Scanner Detected (High RST Ratio)";
+                            }
+                        }
+
+                        // PILLAR 6: Session Longevity
                         let session_key = (external_ip, src_port, dst_port);
                         let session = device.active_tcp_sessions.entry(session_key)
-                            .or_insert_with(|| TcpSession {start_time: now, last_seen: now, bytes_transferred: 0});
+                            .or_insert_with(|| TcpSession {start_time: now, last_seen: now, bytes_transferred: 0, is_vip: false});
                         session.last_seen = now;
                         session.bytes_transferred += payload as u64;
-                    }
 
+                        if session.bytes_transferred > 50_000_000 && device.totals.anomaly_flags_count == 0 {
+                            if !session.is_vip {
+                                let mut key_bytes = [0u8; 28];
+                                key_bytes[0..16].copy_from_slice(&external_ip);
+                                key_bytes[16..22].copy_from_slice(&mac);
+                                key_bytes[22..24].copy_from_slice(&src_port.to_ne_bytes());
+                                key_bytes[24..26].copy_from_slice(&dst_port.to_ne_bytes());
+                                key_bytes[26] = l4_proto;
+                                
+                                let _ = cmd_tx_harvester.try_send(ExecutionCommand::PromoteVip(key_bytes));
+                                session.is_vip = true;
+                            }
+                        }
+                    }
                     if should_ban {
                         let _ = cmd_tx_harvester.try_send(ExecutionCommand::BlockMac(mac, ban_reason.to_string()));
                     }
-
                     processed_in_batch += 1;
                     if processed_in_batch >= 100 { break; } 
                 }
@@ -513,20 +636,46 @@ async fn main() -> Result<(), anyhow::Error> {
                     let Some(msg) = msg_opt else { break; }; // Break if socket closes
                     if let Ok(Message::Binary(bytes)) = msg {
                         if let Ok(response) = flatbuffers::root::<RouterResponse>(&bytes) {
-                            if let (Some(status), Some(mac_str)) = (response.status(), response.mac()) {
-                                println!("☁️ [CLOUD COMMAND] Received {} for MAC: {}", status, mac_str);
-
-                                let mut mac_bytes = [0u8; 6];
-                                let parts: Vec<&str> = mac_str.split(':').collect();
-                                if parts.len() == 6 {
-                                    for i in 0..6 {
-                                        mac_bytes[i] = u8::from_str_radix(parts[i], 16).unwrap_or(0);
+                            if let Some(status) = response.status() {
+                                // --- NEW: THREAT INTEL EXTRACTION ---
+                                if status == "threat_intel" {
+                                    if let Some(intel) = response.threat_intel() {
+                                        // 1. Unpack Ad Domains
+                                        if let Some(ad_domains_fb) = intel.ad_domains() {
+                                            let mut domains = Vec::new();
+                                            for i in 0..ad_domains_fb.len() {
+                                                domains.push(ad_domains_fb.get(i).to_string());
+                                            }
+                                            let _ = cmd_tx_cloud.send(ExecutionCommand::UpdateAdList(domains)).await;
+                                        }
+                                        // 2. Unpack Banned IPs
+                                        if let Some(banned_ips_fb) = intel.banned_ips() {
+                                            let mut ips = Vec::new();
+                                            for i in 0..banned_ips_fb.len() {
+                                                if let Ok(ip) = banned_ips_fb.get(i).parse::<IpAddr>() {
+                                                    ips.push(ip);
+                                                }
+                                            }
+                                            let _ = cmd_tx_cloud.send(ExecutionCommand::UpdateBannedIps(ips)).await;
+                                        }
                                     }
+                                } 
+                                // --- EXISTING: INDIVIDUAL MAC COMMANDS ---
+                                else if let Some(mac_str) = response.mac() {
+                                    println!("☁️ [CLOUD COMMAND] Received {} for MAC: {}", status, mac_str);
 
-                                    if status == "command_blocked" || status == "command_suspicious" {
-                                        let _ = cmd_tx_cloud.send(ExecutionCommand::BlockMac(mac_bytes, "Cloud ML Verdict: Threat Detected".to_string())).await;
-                                    } else if status == "command_allowed" {
-                                        let _ = cmd_tx_cloud.send(ExecutionCommand::AllowMac(mac_bytes)).await;
+                                    let mut mac_bytes = [0u8; 6];
+                                    let parts: Vec<&str> = mac_str.split(':').collect();
+                                    if parts.len() == 6 {
+                                        for i in 0..6 {
+                                            mac_bytes[i] = u8::from_str_radix(parts[i], 16).unwrap_or(0);
+                                        }
+
+                                        if status == "command_blocked" || status == "command_suspicious" {
+                                            let _ = cmd_tx_cloud.send(ExecutionCommand::BlockMac(mac_bytes, "Cloud ML Verdict: Threat Detected".to_string())).await;
+                                        } else if status == "command_allowed" {
+                                            let _ = cmd_tx_cloud.send(ExecutionCommand::AllowMac(mac_bytes)).await;
+                                        }
                                     }
                                 }
                             }
@@ -542,7 +691,7 @@ async fn main() -> Result<(), anyhow::Error> {
             cancel_token.cancel();
         }
     }
-    let _ = tokio::join!(handle_0, handle_1, handle_2, handle_3);
+    let _ = tokio::join!(handle_hb, handle_0, handle_1, handle_2, handle_3);
     println!("✅ All threads safely terminated. eBPF links detached. Goodbye.");
     Ok(())
 }

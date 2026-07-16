@@ -17,36 +17,22 @@ table ChangeStateRequest {
     state: string;
 }
 
-// --- NEW: THE AI TELEMETRY PAYLOAD ---
 table TelemetryReport {
     network_id: string;
-    mac: string;                     // Matches the 6-byte internal_mac from the ring buffer
-    
-    // Feature A: Exfiltration 
-    // Rust Aggregator sums payload_len where (flags & F_WAN_IN) vs (flags & F_WAN_OUT)
-    bytes_in: ulong;                 
-    bytes_out: ulong;                
-    
-    // Feature B: IP Velocity
-    // Rust Aggregator counts unique external_ip occurrences
+    mac: string;
+    bytes_in: ulong;
+    bytes_out: ulong;
     unique_internal_ips: uint;       
-    unique_external_ips: uint;       
-    
-    // Feature C: Kernel Threat Diagnostics
-    // Replaces raw TCP flags. The Rust Aggregator tallies your custom 7-bit eBPF verdicts
+    unique_external_ips: uint;
     total_connections: uint;         
-    passed_connections: uint;        // Tally of packets where (flags & 1) 
-    dropped_connections: uint;       // Tally of packets dropped (Legacy Hard Drops)
-    anomaly_flags_count: uint;       // Tally of (flags & 8) - DPI failures
-    heuristic_flags_count: uint;     // Tally of (flags & 32) - mDNS/SSDP anomalies
-    infra_alert_count: uint;         // Tally of (flags & 64) - Rogue DHCP/ARP
-    
-    // Feature D: Port Entropy
-    // Calculated based on spread of the 2-byte dst_port
-    port_entropy_score: float;       
+    passed_connections: uint;
+    dropped_connections: uint;
+    anomaly_flags_count: uint;
+    heuristic_flags_count: uint;
+    infra_alert_count: uint;
+    port_entropy_score: float;
 }
 
-// Update the Envelope to include the TelemetryReport
 union IncomingPayload {
     RegisterRequest,
     ChangeStateRequest,
@@ -57,10 +43,15 @@ table RouterMessage {
     payload: IncomingPayload;
 }
 
-// Cloud -> Router Command
+table ThreatIntelPayload {
+ad_domains: [string];
+banned_ips: [string];
+}
+
 table RouterResponse {
-    status: string;
-    mac: string;
+status: string;
+mac: string;
+threat_intel: ThreatIntelPayload;
 }
 
 root_type RouterMessage;
