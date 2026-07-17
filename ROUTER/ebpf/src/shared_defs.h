@@ -62,7 +62,7 @@ __u16 src_port;
 __u16 dst_port;
 __u8 protocol;
 __u8 pad;
-} attribute((packed));
+} __attribute__((packed));
 
 // --- The Telemetry Payload ---
 // Mapped for 16-byte IPv6 compatibility (IPv4 takes the first 4 bytes)
@@ -76,7 +76,7 @@ __u8 layer_4_protocol;
 __u8 tcp_flags;
 __u8 ip_version;
 __u8 flags;
-} attribute((packed));
+} __attribute__((packed));
 
 // --- Triage Enforcement Bitmasks ---
 #define F_PASS 1         // Bit 0: 1 = Pass, 0 = Drop

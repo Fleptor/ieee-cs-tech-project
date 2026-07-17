@@ -210,7 +210,7 @@ async fn handle_router_socket(mut socket: WebSocket, network_id: String, state: 
                                     if let Some(telemetry) = envelope.payload_as_telemetry_report() {
                                         let mac = telemetry.mac().unwrap_or_default().to_string();
                                         let network_id_req = telemetry.network_id().unwrap_or_default().to_string();
-                                        
+
                                         let bytes_in = telemetry.bytes_in();
                                         let bytes_out = telemetry.bytes_out();
                                         let drops = telemetry.dropped_connections();
@@ -228,13 +228,13 @@ async fn handle_router_socket(mut socket: WebSocket, network_id: String, state: 
                                             let db_clone = state.db.clone();
                                             let mac_clone = mac.clone();
                                             let net_id_clone = network_id_req.clone();
-                                            
+
                                             tokio::spawn(async move {
                                                 match crate::ai::consult_llm_supervisor(&mac_clone, bytes_in, bytes_out, drops, entropy).await {
                                                     Ok(verdict) => {
                                                         println!("\n🤖 [LLM VERDICT] Threat: {} | Confidence: {}%", verdict.threat_name, verdict.confidence);
                                                         println!("📋 [LLM REPORT] {}", verdict.human_explanation);
-                                                        
+
                                                         // --- 1. SAVE THE REPORT FOR THE FRONTEND (RUNTIME QUERY) ---
                                                         let _ = sqlx::query("INSERT INTO audit_logs (network_id, mac, threat_name, confidence, explanation) VALUES (?, ?, ?, ?, ?)")
                                                             .bind(&net_id_clone)
@@ -243,10 +243,10 @@ async fn handle_router_socket(mut socket: WebSocket, network_id: String, state: 
                                                             .bind(verdict.confidence as i64)
                                                             .bind(&verdict.human_explanation)
                                                             .execute(&db_clone).await;
-                                                        
+
                                                         if verdict.should_block {
                                                             println!("🚨 [ACTION] LLM authorized block. Isolating MAC {}...", mac_clone);
-                                                            
+
                                                             // --- 2. SYNC THE SERVER DATABASE (RUNTIME QUERY) ---
                                                             let _ = sqlx::query("UPDATE devices SET state = 'blocked' WHERE network_id = ? AND mac = ?")
                                                                 .bind(&net_id_clone)
@@ -329,19 +329,39 @@ pub async fn add_network_to_user(State(db): State<SharedDatabase>, claims: Claim
     let existing = sqlx::query!("SELECT 1 AS exists_flag FROM networks WHERE network_id = ? AND username = ?", payload.network_id, claims.username)
         .fetch_optional(&db)
         .await?;
-    if existing.is_none() {
+    
+    if existing.is_some() {
+        println!("⚠️ User {} is already a member of network {}.", claims.username, payload.network_id);
         return Err(AppError::Conflict);
     }
-    let Some(username)= sqlx::query_scalar!("SELECT username FROM networks WHERE network_id = ? AND is_admin = ?", payload.network_id, 1)
+
+    let Some(admin_name)= sqlx::query_scalar!("SELECT username FROM networks WHERE network_id = ? AND is_admin = ?", payload.network_id, 1)
         .fetch_optional(&db)
         .await?
     else {
         return Err(AppError::Conflict);
     };
-    let _email: String = sqlx::query_scalar!("SELECT email FROM users WHERE username = ?", username)
+    let admin_email: String = sqlx::query_scalar!("SELECT email FROM users WHERE username = ?", admin_name)
         .fetch_one(&db)
         .await?;
+    let requester = claims.username.clone();
+    let network_id = payload.network_id.clone();
+    
+    tokio::spawn(async move {
+        send_access_request_email(&admin_email, &admin_name, &requester, &network_id).await;
+    });
+
     return Ok(StatusCode::ACCEPTED);
+}
+
+// --- NEW EMAIL DISPATCHER ---
+async fn send_access_request_email(admin_email: &str, admin_name: &str, requester: &str, network_id: &str) {
+    // TODO: In production, use the `reqwest` crate here to hit the SendGrid or Resend API!
+    
+    println!("\n📧 [EMAIL DISPATCHED]");
+    println!("   To: {}", admin_email);
+    println!("   Subject: Access Request for Network {}", network_id);
+    println!("   Body: Hello {}, User '{}' is requesting access to your network ({}). Please log in to your dashboard to approve or deny this request.\n", admin_name, requester, network_id);
 }
 
 #[axum::debug_handler]

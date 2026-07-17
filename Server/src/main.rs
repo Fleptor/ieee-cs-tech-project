@@ -81,7 +81,7 @@ async fn main() {
             interval.tick().await;
             match crate::ai::fetch_global_threat_intel().await {
                 Ok(new_intel) => {
-                    println!("✅ [CRON] Successfully pulled new Threat Intel from Claude!");
+                    println!("✅ [CRON] Successfully pulled new Threat Intel from OSINT!");
                     // Acquire exclusive write lock to update the memory
                     let mut cache = intel_cache_clone.write().await;
                     *cache = new_intel;

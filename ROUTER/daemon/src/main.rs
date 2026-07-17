@@ -18,7 +18,6 @@ use tokio_tungstenite::tungstenite::protocol::Message;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-
 // Assuming you ran `make flatbuffers` and the generated file is in src/
 #[allow(dead_code, unused_imports, clippy::all, mismatched_lifetime_syntaxes, elided_lifetimes_in_paths, unsafe_op_in_unsafe_fn)]
 #[path = "router_generated.rs"]
@@ -32,7 +31,7 @@ enum ExecutionCommand {
     AllowMac([u8; 6]),
     PromoteVip([u8; 28]),
     UpdateAdList(Vec<String>),
-    UpdateBannedIps(Vec<IpAddr>)
+    UpdateBannedIps(Vec<String>)
 }
 
 // 1. The API Boundary: The Optimized 32-Byte Struct
@@ -153,39 +152,6 @@ async fn main() -> Result<(), anyhow::Error> {
         .unwrap();
     sqlx::migrate!("./migrations").run(&db).await.unwrap();
 
-    // --- CONNECT TO AXUM CLOUD ---
-    let network_id = "NET_123";
-    let cloud_url = format!("wss://localhost:3000/api/router/ws/{}", network_id);
-    println!("🔌 Connecting to Axum Cloud at {}...", cloud_url);
-    
-    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-    
-    let mut request = cloud_url.into_client_request().expect("Invalid Cloud URL");
-    let router_secret = std::env::var("ROUTER_SECRET").unwrap_or_else(|_| "router_secret_key".to_string());
-    let auth_header_value = format!("ApiKey {}", router_secret);
-    
-    // Inject the authentication header so Axum's `RouterKey` extractor accepts us!
-    request.headers_mut().insert("Authorization", auth_header_value.parse().expect("Invalid Authorization Header Format"));
-
-    // --- NEW: BYPASS SELF-SIGNED CERTIFICATE VALIDATION ---
-    use native_tls::TlsConnector;
-    use tokio_tungstenite::Connector;
-
-    let native_tls_connector = TlsConnector::builder()
-        .danger_accept_invalid_certs(true)     // Ignore the self-signed nature
-        .danger_accept_invalid_hostnames(true) // Ignore localhost mismatch
-        .build()
-        .context("Failed to build custom TLS connector")?;
-
-    let connector = Connector::NativeTls(native_tls_connector.into());
-
-    // Connect using the custom, relaxed TLS configuration
-    let (ws_stream, _) = tokio_tungstenite::connect_async_tls_with_config(request, None, false, Some(connector))
-       .await.expect("Failed to connect to Axum Cloud! Is the server running?");
-    
-    let (mut ws_sender, mut ws_receiver) = ws_stream.split();
-    println!("🟢 WebSocket established! Secure tunnel active.");
-
     let cancel_token = CancellationToken::new();
 
     // --- THE GLOBAL AI MEMORY BANK ---
@@ -221,11 +187,11 @@ async fn main() -> Result<(), anyhow::Error> {
         .context("Failed to map fast_path_vip")?;
     let mut ad_filter: BloomFilter<_, u32> = BloomFilter::try_from(bpf.take_map("Ad_Bloom_Filter").expect("Ad_Bloom_Filter map not found"))
         .context("Failed to map Ad_Bloom_Filter")?;
-    let mut blocked_ipv4: BpfHashMap<_, u32, u32> = BpfHashMap::try_from(bpf.take_map("Blocked_IPV4s").expect("Blocked_IPV4s map not found"))
+    let mut blocked_ipv4s: BpfHashMap<_, u32, u32> = BpfHashMap::try_from(bpf.take_map("Blocked_IPV4s").expect("Blocked_IPV4s map not found"))
         .context("Failed to map Blocked_IPV4s")?;
-    let mut blocked_ipv6: BpfHashMap<_, [u8; 16], u32> = BpfHashMap::try_from(bpf.take_map("Blocked_IPV6s").expect("Blocked_IPV6s map not found"))
+    let mut blocked_ipv6s: BpfHashMap<_, [u8; 16], u32> = BpfHashMap::try_from(bpf.take_map("Blocked_IPV6s").expect("Blocked_IPV6s map not found"))
         .context("Failed to map Blocked_IPV6s")?;
-
+    
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<ExecutionCommand>(100);
     let ct_0 = cancel_token.clone();
 
@@ -252,7 +218,6 @@ async fn main() -> Result<(), anyhow::Error> {
                                 println!("✅ [EXECUTIONER] Device restored to network.");
                             }
                             ExecutionCommand::PromoteVip(key) => {
-                                // Initialize the packet counter to 0 in the kernel map
                                 if let Err(e) = vip_map.insert(key, 0u64, 0) {
                                     println!("🔴 [eBPF ERROR] Failed to promote VIP flow: {}", e);
                                 } else {
@@ -263,7 +228,6 @@ async fn main() -> Result<(), anyhow::Error> {
                                 let mut count = 0;
                                 for domain in domains {
                                     let mut hash: u32 = 2166136261;
-                                    // Parse flat "ad.com" into DNS wire format "\x02ad\x03com" and hash it
                                     for part in domain.split('.') {
                                         hash ^= part.len() as u32;
                                         hash = hash.wrapping_mul(16777619);
@@ -274,7 +238,6 @@ async fn main() -> Result<(), anyhow::Error> {
                                             hash = hash.wrapping_mul(16777619);
                                         }
                                     }
-                                    // Insert the domain hash into the eBPF Bloom Filter
                                     let _ = ad_filter.insert(hash, 0);
                                     count += 1;
                                 }
@@ -283,17 +246,19 @@ async fn main() -> Result<(), anyhow::Error> {
                             ExecutionCommand::UpdateBannedIps(ips) => {
                                 let mut v4_count = 0;
                                 let mut v6_count = 0;
-                                for ip in ips {
-                                    match ip {
-                                        IpAddr::V4(ipv4) => {
-                                            // from_ne_bytes elegantly maps the Rust IP exactly how the C kernel reads it in memory!
-                                            let ip_u32 = u32::from_ne_bytes(ipv4.octets());
-                                            let _ = blocked_ipv4.insert(ip_u32, 1u32, 0);
-                                            v4_count += 1;
-                                        }
-                                        IpAddr::V6(ipv6) => {
-                                            let _ = blocked_ipv6.insert(ipv6.octets(), 1u32, 0);
-                                            v6_count += 1;
+                                for ip_str in ips {
+                                    if let Ok(ip) = ip_str.parse::<std::net::IpAddr>() {
+                                        match ip {
+                                            std::net::IpAddr::V4(ipv4) => {
+                                                // Convert safely to the exact 32-bit integer the Kernel expects 
+                                                let ip_int = u32::from_ne_bytes(ipv4.octets());
+                                                let _ = blocked_ipv4s.insert(ip_int, 1u32, 0);
+                                                v4_count += 1;
+                                            }
+                                            std::net::IpAddr::V6(ipv6) => {
+                                                let _ = blocked_ipv6s.insert(ipv6.octets(), 1u32, 0);
+                                                v6_count += 1;
+                                            }
                                         }
                                     }
                                 }
@@ -342,14 +307,12 @@ async fn main() -> Result<(), anyhow::Error> {
                     let mut should_ban = false;
                     let mut ban_reason = "";
 
-                    // Get or create the master state for this device
                     let device = state.entry(mac).or_insert_with(|| DeviceState{
                         totals: DeviceTotals::default(),
                         last_seen: now,
                         active_tcp_sessions: FxHashMap::default()
                     });
 
-                    // 1. AI Aggregation Math (Short-Term)
                     device.last_seen = now;
                     device.totals.total_connections += 1;
                     device.totals.unique_external_ips.insert(&external_ip);
@@ -362,11 +325,9 @@ async fn main() -> Result<(), anyhow::Error> {
                         device.totals.anomaly_flags_count += 1; 
                         if device.totals.anomaly_flags_count == 1{
                             let ip_string = if l3_proto == 4 {
-                                // Slice the first 4 bytes and convert to Ipv4Addr
                                 let v4_bytes: [u8; 4] = external_ip[0..4].try_into().unwrap_or([0; 4]);
                                 IpAddr::V4(Ipv4Addr::from(v4_bytes)).to_string()
                             } else {
-                                // Use all 16 bytes for IPv6
                                 IpAddr::V6(Ipv6Addr::from(external_ip)).to_string()
                             };
                             println!("[ANOMALY DROP] L4 Violation | Proto: {} | Payload: {} bytes from IP: {}", l4_proto, payload, ip_string);
@@ -391,14 +352,9 @@ async fn main() -> Result<(), anyhow::Error> {
                     }
 
                     if l4_proto == 6 {
-                        if (tcp_flags & 0x02) != 0 {
-                            device.totals.syn_count += 1;
-                        }
-                        if (tcp_flags & 0x04) != 0{
-                            device.totals.rst_count += 1;
-                        }
+                        if (tcp_flags & 0x02) != 0 { device.totals.syn_count += 1; }
+                        if (tcp_flags & 0x04) != 0 { device.totals.rst_count += 1; }
 
-                        // PILLAR 4: SYN/RST Anomaly Detection (Port Scans / Lateral Movement)
                         if device.totals.syn_count > 50 {
                             let anomaly_ratio = (device.totals.rst_count as f64) / (device.totals.syn_count as f64 + 1.0);
                             if anomaly_ratio > 0.6 {
@@ -409,7 +365,6 @@ async fn main() -> Result<(), anyhow::Error> {
                             }
                         }
 
-                        // PILLAR 6: Session Longevity
                         let session_key = (external_ip, src_port, dst_port);
                         let session = device.active_tcp_sessions.entry(session_key)
                             .or_insert_with(|| TcpSession {start_time: now, last_seen: now, bytes_transferred: 0, is_vip: false});
@@ -437,9 +392,7 @@ async fn main() -> Result<(), anyhow::Error> {
                     if processed_in_batch >= 100 { break; } 
                 }
 
-                // --- PILLAR 6 GARBAGE COLLECTOR (Runs every 10 seconds) ---
                 if last_gc.elapsed().as_secs() >= 10 {
-                    
                     let mut mac_to_remove = Vec::new();
                     for (mac_key, device) in state.iter_mut() {
                         if now.duration_since(device.last_seen) > time::Duration::from_secs(86400) {
@@ -447,25 +400,19 @@ async fn main() -> Result<(), anyhow::Error> {
                             continue;
                         }
                         let mut slowloris_detected = false;
-
                         device.active_tcp_sessions.retain(|key, session| {
                             let uptime = now.duration_since(session.start_time).as_secs();
                             let idle_time = now.duration_since(session.last_seen).as_secs();
-
-                            // Edge Case Mitigation: Skip Persistent SSH sessions (Port 22)
                             if key.1 == 22 || key.2 == 22 { return true; }
-
-                            // The State Exhaustion Trigger (5 mins = 300s)
                             if uptime > 300 {
                                 let throughput = session.bytes_transferred / uptime;
                                 if throughput < 100 {
                                     slowloris_detected = true;
-                                    return false; // Evict it
+                                    return false; 
                                 }
                             }
-                            // Silent Memory Safety: Drop dead connections idle for > 5 mins
                             if idle_time > 300 { return false; }
-                            true // Keep session alive
+                            true 
                         });
                         if slowloris_detected {
                             let mac_str = format!("{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}", mac_key[0], mac_key[1], mac_key[2], mac_key[3], mac_key[4], mac_key[5]);
@@ -478,9 +425,8 @@ async fn main() -> Result<(), anyhow::Error> {
                     }
                     last_gc = now;
                 }
-            } // <--- Lock is automatically dropped here
+            } // Lock dropped
 
-            // Yield control back to Tokio
             if processed_in_batch == 0 {
                 tokio::time::sleep(Duration::from_millis(1)).await; 
             } else {
@@ -488,193 +434,182 @@ async fn main() -> Result<(), anyhow::Error> {
             }
         }
     });
-    // --- THREAD 2: THE CLOUD REPORTER (WebSocket Sender) ---
-    let telemetry_reporter_clone = Arc::clone(&telemetry_state);
+
+    // --- THE CLOUD RECONNECTION LOOP (Threads 2 & 3) ---
+    let network_id = "NET_123".to_string();
+    let cloud_url = format!("wss://localhost:3000/api/router/ws/{}", network_id);
+    let router_secret = std::env::var("ROUTER_SECRET").unwrap_or_else(|_| "router_secret_key".to_string());
+    
+    let ct_loop = cancel_token.clone();
+    let telemetry_reporter_state = Arc::clone(&telemetry_state);
     let db_vault = db.clone();
-    let ct_2 = cancel_token.clone();
-    let handle_2 = tokio::spawn(async move {
-        let mut ticker = interval(Duration::from_secs(10));
-        let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
+    let cmd_tx_cloud = cmd_tx.clone();
+
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    use native_tls::TlsConnector;
+    use tokio_tungstenite::Connector;
+
+    let handle_reconnect = tokio::spawn(async move {
         loop {
-            tokio::select! {
-                _ = ct_2.cancelled() => {
-                    println!("🛑 Cloud Reporter Thread spinning down...");
-                    break;
-                }
-                _ = ticker.tick() => {
-                    let mut reports_to_send;
-                    {
-                        let mut state = telemetry_reporter_clone.lock().unwrap();
-                        reports_to_send = Vec::with_capacity(state.len());
-                        for (mac, device) in state.iter_mut() {
-                            let totals = std::mem::take(&mut device.totals);
-                            if totals.total_connections > 0 {
-                                reports_to_send.push((*mac, totals));
-                            }
-                        }
+            if ct_loop.is_cancelled() { break; }
+
+            println!("🔌 Attempting to connect to Axum Cloud at {}...", cloud_url);
+            let mut request = cloud_url.clone().into_client_request().expect("Invalid Cloud URL");
+            let auth_header_value = format!("ApiKey {}", router_secret);
+            request.headers_mut().insert("Authorization", auth_header_value.parse().unwrap());
+
+            let native_tls_connector = TlsConnector::builder()
+                .danger_accept_invalid_certs(true)     
+                .danger_accept_invalid_hostnames(true) 
+                .build().unwrap();
+            let connector = Connector::NativeTls(native_tls_connector.into());
+
+            // Attempt to connect. If it fails, catch the error and retry.
+            let ws_stream = match tokio_tungstenite::connect_async_tls_with_config(request, None, false, Some(connector)).await {
+                Ok((stream, _)) => stream,
+                Err(e) => {
+                    println!("⚠️ [WS ERROR] Failed to connect: {}. Retrying in 5 seconds...", e);
+                    tokio::select! {
+                        _ = ct_loop.cancelled() => break,
+                        _ = tokio::time::sleep(Duration::from_secs(5)) => continue,
                     }
-                    if !reports_to_send.is_empty() {
-                        for (mac, totals) in reports_to_send {
-                            builder.reset();
-                            let mac_string = format!("{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-                            let mac_fb = builder.create_string(&mac_string);
-                            let net_id_fb = builder.create_string(network_id);
-                            let ip_count = totals.unique_external_ips.len().round() as u32;
+                }
+            };
 
-                            let mut port_entropy: f32 = 0.0;
-                            let total_ports_hit: u32 = totals.port_counts.values().sum();
-                            if total_ports_hit > 0 {
-                                let total_f = total_ports_hit as f32;
-                                for &count in totals.port_counts.values() {
-                                    let probability = (count as f32) / total_f;
-                                    // Formula: H(X) = - SUM ( P(x) * log2(P(x)) )
-                                    port_entropy -= probability * probability.log2();
-                                }
-                            }
+            println!("🟢 WebSocket established! Secure tunnel active.");
+            let (mut ws_sender, mut ws_receiver) = ws_stream.split();
+            
+            // Create a local token just for this active connection
+            let conn_token = CancellationToken::new();
 
-                            // Build the AI Telemetry Payload defined in your router.fbs
-                            let mut tel_builder = TelemetryReportBuilder::new(&mut builder);
-                            tel_builder.add_network_id(net_id_fb);
-                            tel_builder.add_mac(mac_fb);
-                            tel_builder.add_bytes_in(totals.bytes_in);
-                            tel_builder.add_bytes_out(totals.bytes_out);
-                            tel_builder.add_unique_external_ips(ip_count);
-                            tel_builder.add_total_connections(totals.total_connections);
-                            tel_builder.add_passed_connections(totals.passed_connections);
-                            tel_builder.add_dropped_connections(totals.dropped_connections);
-                            tel_builder.add_anomaly_flags_count(totals.anomaly_flags_count);
-                            tel_builder.add_heuristic_flags_count(totals.heuristic_flags_count);
-                            tel_builder.add_infra_alert_count(totals.infra_alert_count);
-                            tel_builder.add_port_entropy_score(port_entropy); 
-
-                            let tel_offset = tel_builder.finish();
-                            let mut msg_builder = RouterMessageBuilder::new(&mut builder);
-                            msg_builder.add_payload_type(IncomingPayload::TelemetryReport);
-                            msg_builder.add_payload(tel_offset.as_union_value());
-                            let final_msg = msg_builder.finish();
-                            builder.finish(final_msg, None);
-
-                            if let Err(_) = ws_sender.send(Message::Binary(builder.finished_data().to_vec().into())).await {
-                                println!("🔴 [WS ERROR] Failed to beam telemetry to cloud. Vaulting to SQLite...");
-                                let _ = sqlx::query("INSERT OR REPLACE INTO reports (network_id, mac, bytes_in, bytes_out, unique_external_ips, total_connections, passed_connections, dropped_connections, anomaly_flags_count, heuristic_flags_count, infra_alert_count, port_entropy)
-                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-                                    .bind(network_id)
-                                    .bind(mac_string)
-                                    .bind(totals.bytes_in as i64)
-                                    .bind(totals.bytes_out as i64)
-                                    .bind(ip_count as i64)
-                                    .bind(totals.total_connections as i64)
-                                    .bind(totals.passed_connections as i64)
-                                    .bind(totals.dropped_connections as i64)
-                                    .bind(totals.anomaly_flags_count as i64)
-                                    .bind(totals.heuristic_flags_count as i64)
-                                    .bind(totals.infra_alert_count as i64)
-                                    .bind(port_entropy as f64)
-                                    .execute(&db_vault).await;
-                            } 
-                            else {
-                                if let Ok(backlog) = sqlx::query_as::<_, ReportForDb>("SELECT * FROM reports").fetch_all(&db_vault).await {
-                                    if !backlog.is_empty() {
-                                        println!("🔄 [VAULT] Uploading {} backlogged reports...", backlog.len());
-                                        let mut flag = true;
-                                        for report in backlog {
-                                            builder.reset();
-                                            let b_mac_fb = builder.create_string(&report.mac);
-                                            let b_net_id_fb = builder.create_string(&report.network_id);
-
-                                            let mut b_tel = TelemetryReportBuilder::new(&mut builder);
-                                            b_tel.add_network_id(b_net_id_fb);
-                                            b_tel.add_mac(b_mac_fb);
-                                            b_tel.add_bytes_in(report.bytes_in as u64);
-                                            b_tel.add_bytes_out(report.bytes_out as u64);
-                                            b_tel.add_unique_external_ips(report.unique_external_ips as u32);
-                                            b_tel.add_total_connections(report.total_connections as u32);
-                                            b_tel.add_passed_connections(report.passed_connections as u32);
-                                            b_tel.add_dropped_connections(report.dropped_connections as u32);
-                                            b_tel.add_anomaly_flags_count(report.anomaly_flags_count as u32);
-                                            b_tel.add_heuristic_flags_count(report.heuristic_flags_count as u32);
-                                            b_tel.add_infra_alert_count(report.infra_alert_count as u32);
-                                            b_tel.add_port_entropy_score(report.port_entropy as f32); 
-
-                                            let b_tel_offset = b_tel.finish();
-                                            let mut b_msg = RouterMessageBuilder::new(&mut builder);
-                                            b_msg.add_payload_type(IncomingPayload::TelemetryReport);
-                                            b_msg.add_payload(b_tel_offset.as_union_value());
-                                            let b_final = b_msg.finish();
-                                            builder.finish(b_final, None);
-
-                                            if ws_sender.send(Message::Binary(builder.finished_data().to_vec().into())).await.is_err() {
-                                                let _ = sqlx::query("DELETE FROM reports WHERE id < ?").bind(&report.id).execute(&db_vault).await;
-                                                flag = false;
-                                                break;
-                                            }
-                                        }
-                                        if flag {
-                                            let _ = sqlx::query("DELETE FROM reports").execute(&db_vault).await;
-                                        }
+            // Spawn THREAD 2 (Reporter)
+            let ct_rep = conn_token.clone();
+            let tel_rep = Arc::clone(&telemetry_reporter_state);
+            let db_rep = db_vault.clone();
+            let net_id_rep = network_id.clone();
+            
+            tokio::spawn(async move {
+                let mut ticker = interval(Duration::from_secs(10));
+                let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
+                loop {
+                    tokio::select! {
+                        _ = ct_rep.cancelled() => break,
+                        _ = ticker.tick() => {
+                            let mut reports_to_send;
+                            {
+                                let mut state = tel_rep.lock().unwrap();
+                                reports_to_send = Vec::with_capacity(state.len());
+                                for (mac, device) in state.iter_mut() {
+                                    let totals = std::mem::take(&mut device.totals);
+                                    if totals.total_connections > 0 {
+                                        reports_to_send.push((*mac, totals));
                                     }
                                 }
                             }
-                        }
-                    }
-                }
-            }
-        }
-    });
+                            if !reports_to_send.is_empty() {
+                                for (mac, totals) in reports_to_send {
+                                    builder.reset();
+                                    let mac_string = format!("{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+                                    let mac_fb = builder.create_string(&mac_string);
+                                    let net_id_fb = builder.create_string(&net_id_rep);
+                                    let ip_count = totals.unique_external_ips.len().round() as u32;
 
-    // --- THREAD 3: THE CLOUD LISTENER (WebSocket Receiver) ---
-    let cmd_tx_cloud = cmd_tx.clone();
-    let ct_3 = cancel_token.clone();
-    let handle_3 = tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                _ = ct_3.cancelled() => {
-                    println!("🛑 Cloud Listener Thread spinning down...");
-                    break;
-                }
-                msg_opt = ws_receiver.next() => {
-                    let Some(msg) = msg_opt else { break; }; // Break if socket closes
-                    if let Ok(Message::Binary(bytes)) = msg {
-                        if let Ok(response) = flatbuffers::root::<RouterResponse>(&bytes) {
-                            if let Some(status) = response.status() {
-                                // --- NEW: THREAT INTEL EXTRACTION ---
-                                if status == "threat_intel" {
-                                    if let Some(intel) = response.threat_intel() {
-                                        // 1. Unpack Ad Domains
-                                        if let Some(ad_domains_fb) = intel.ad_domains() {
-                                            let mut domains = Vec::new();
-                                            for i in 0..ad_domains_fb.len() {
-                                                domains.push(ad_domains_fb.get(i).to_string());
-                                            }
-                                            let _ = cmd_tx_cloud.send(ExecutionCommand::UpdateAdList(domains)).await;
+                                    let mut port_entropy: f32 = 0.0;
+                                    let total_ports_hit: u32 = totals.port_counts.values().sum();
+                                    if total_ports_hit > 0 {
+                                        let total_f = total_ports_hit as f32;
+                                        for &count in totals.port_counts.values() {
+                                            let probability = (count as f32) / total_f;
+                                            port_entropy -= probability * probability.log2();
                                         }
-                                        // 2. Unpack Banned IPs
-                                        if let Some(banned_ips_fb) = intel.banned_ips() {
-                                            let mut ips = Vec::new();
-                                            for i in 0..banned_ips_fb.len() {
-                                                if let Ok(ip) = banned_ips_fb.get(i).parse::<IpAddr>() {
-                                                    ips.push(ip);
+                                    }
+
+                                    let mut tel_builder = TelemetryReportBuilder::new(&mut builder);
+                                    tel_builder.add_network_id(net_id_fb);
+                                    tel_builder.add_mac(mac_fb);
+                                    tel_builder.add_bytes_in(totals.bytes_in);
+                                    tel_builder.add_bytes_out(totals.bytes_out);
+                                    tel_builder.add_unique_external_ips(ip_count);
+                                    tel_builder.add_total_connections(totals.total_connections);
+                                    tel_builder.add_passed_connections(totals.passed_connections);
+                                    tel_builder.add_dropped_connections(totals.dropped_connections);
+                                    tel_builder.add_anomaly_flags_count(totals.anomaly_flags_count);
+                                    tel_builder.add_heuristic_flags_count(totals.heuristic_flags_count);
+                                    tel_builder.add_infra_alert_count(totals.infra_alert_count);
+                                    tel_builder.add_port_entropy_score(port_entropy); 
+
+                                    let tel_offset = tel_builder.finish();
+                                    let mut msg_builder = RouterMessageBuilder::new(&mut builder);
+                                    msg_builder.add_payload_type(IncomingPayload::TelemetryReport);
+                                    msg_builder.add_payload(tel_offset.as_union_value());
+                                    let final_msg = msg_builder.finish();
+                                    builder.finish(final_msg, None);
+
+                                    if let Err(_) = ws_sender.send(Message::Binary(builder.finished_data().to_vec().into())).await {
+                                        println!("🔴 [WS ERROR] Failed to beam telemetry to cloud. Vaulting to SQLite...");
+                                        let _ = sqlx::query("INSERT OR REPLACE INTO reports (network_id, mac, bytes_in, bytes_out, unique_external_ips, total_connections, passed_connections, dropped_connections, anomaly_flags_count, heuristic_flags_count, infra_alert_count, port_entropy)
+                                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+                                            .bind(&net_id_rep)
+                                            .bind(mac_string)
+                                            .bind(totals.bytes_in as i64)
+                                            .bind(totals.bytes_out as i64)
+                                            .bind(ip_count as i64)
+                                            .bind(totals.total_connections as i64)
+                                            .bind(totals.passed_connections as i64)
+                                            .bind(totals.dropped_connections as i64)
+                                            .bind(totals.anomaly_flags_count as i64)
+                                            .bind(totals.heuristic_flags_count as i64)
+                                            .bind(totals.infra_alert_count as i64)
+                                            .bind(port_entropy as f64)
+                                            .execute(&db_rep).await;
+                                        
+                                        // Trigger reconnection!
+                                        ct_rep.cancel();
+                                        break;
+                                    } 
+                                    else {
+                                        // Attempt to upload backlog
+                                        if let Ok(backlog) = sqlx::query_as::<_, ReportForDb>("SELECT * FROM reports").fetch_all(&db_rep).await {
+                                            if !backlog.is_empty() {
+                                                println!("🔄 [VAULT] Uploading {} backlogged reports...", backlog.len());
+                                                let mut flag = true;
+                                                for report in backlog {
+                                                    builder.reset();
+                                                    let b_mac_fb = builder.create_string(&report.mac);
+                                                    let b_net_id_fb = builder.create_string(&report.network_id);
+
+                                                    let mut b_tel = TelemetryReportBuilder::new(&mut builder);
+                                                    b_tel.add_network_id(b_net_id_fb);
+                                                    b_tel.add_mac(b_mac_fb);
+                                                    b_tel.add_bytes_in(report.bytes_in as u64);
+                                                    b_tel.add_bytes_out(report.bytes_out as u64);
+                                                    b_tel.add_unique_external_ips(report.unique_external_ips as u32);
+                                                    b_tel.add_total_connections(report.total_connections as u32);
+                                                    b_tel.add_passed_connections(report.passed_connections as u32);
+                                                    b_tel.add_dropped_connections(report.dropped_connections as u32);
+                                                    b_tel.add_anomaly_flags_count(report.anomaly_flags_count as u32);
+                                                    b_tel.add_heuristic_flags_count(report.heuristic_flags_count as u32);
+                                                    b_tel.add_infra_alert_count(report.infra_alert_count as u32);
+                                                    b_tel.add_port_entropy_score(report.port_entropy as f32); 
+
+                                                    let b_tel_offset = b_tel.finish();
+                                                    let mut b_msg = RouterMessageBuilder::new(&mut builder);
+                                                    b_msg.add_payload_type(IncomingPayload::TelemetryReport);
+                                                    b_msg.add_payload(b_tel_offset.as_union_value());
+                                                    let b_final = b_msg.finish();
+                                                    builder.finish(b_final, None);
+
+                                                    if ws_sender.send(Message::Binary(builder.finished_data().to_vec().into())).await.is_err() {
+                                                        let _ = sqlx::query("DELETE FROM reports WHERE id < ?").bind(&report.id).execute(&db_rep).await;
+                                                        flag = false;
+                                                        ct_rep.cancel();
+                                                        break;
+                                                    }
+                                                }
+                                                if flag {
+                                                    let _ = sqlx::query("DELETE FROM reports").execute(&db_rep).await;
                                                 }
                                             }
-                                            let _ = cmd_tx_cloud.send(ExecutionCommand::UpdateBannedIps(ips)).await;
-                                        }
-                                    }
-                                } 
-                                // --- EXISTING: INDIVIDUAL MAC COMMANDS ---
-                                else if let Some(mac_str) = response.mac() {
-                                    println!("☁️ [CLOUD COMMAND] Received {} for MAC: {}", status, mac_str);
-
-                                    let mut mac_bytes = [0u8; 6];
-                                    let parts: Vec<&str> = mac_str.split(':').collect();
-                                    if parts.len() == 6 {
-                                        for i in 0..6 {
-                                            mac_bytes[i] = u8::from_str_radix(parts[i], 16).unwrap_or(0);
-                                        }
-
-                                        if status == "command_blocked" || status == "command_suspicious" {
-                                            let _ = cmd_tx_cloud.send(ExecutionCommand::BlockMac(mac_bytes, "Cloud ML Verdict: Threat Detected".to_string())).await;
-                                        } else if status == "command_allowed" {
-                                            let _ = cmd_tx_cloud.send(ExecutionCommand::AllowMac(mac_bytes)).await;
                                         }
                                     }
                                 }
@@ -682,16 +617,94 @@ async fn main() -> Result<(), anyhow::Error> {
                         }
                     }
                 }
+            });
+
+            // Spawn THREAD 3 (Listener)
+            let ct_lis = conn_token.clone();
+            let cmd_tx_lis = cmd_tx_cloud.clone();
+            
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = ct_lis.cancelled() => break,
+                        msg_opt = ws_receiver.next() => {
+                            let Some(msg) = msg_opt else { 
+                                println!("🔴 [WS] Socket closed by server.");
+                                ct_lis.cancel(); // Trigger reconnect
+                                break; 
+                            };
+                            if let Ok(Message::Binary(bytes)) = msg {
+                                if let Ok(response) = flatbuffers::root::<RouterResponse>(&bytes) {
+                                    if let Some(status) = response.status() {
+                                        // --- THREAT INTEL EXTRACTION ---
+                                        if status == "threat_intel" {
+                                            if let Some(intel) = response.threat_intel() {
+                                                if let Some(ad_domains_fb) = intel.ad_domains() {
+                                                    let mut domains = Vec::new();
+                                                    for i in 0..ad_domains_fb.len() {
+                                                        domains.push(ad_domains_fb.get(i).to_string());
+                                                    }
+                                                    let _ = cmd_tx_lis.send(ExecutionCommand::UpdateAdList(domains)).await;
+                                                }
+                                                if let Some(banned_ips_fb) = intel.banned_ips() {
+                                                    let mut ips = Vec::new();
+                                                    for i in 0..banned_ips_fb.len() {
+                                                        ips.push(banned_ips_fb.get(i).to_string());
+                                                    }
+                                                    let _ = cmd_tx_lis.send(ExecutionCommand::UpdateBannedIps(ips)).await;
+                                                }
+                                            }
+                                        } 
+                                        else if let Some(mac_str) = response.mac() {
+                                            println!("☁️ [CLOUD COMMAND] Received {} for MAC: {}", status, mac_str);
+                                            let mut mac_bytes = [0u8; 6];
+                                            let parts: Vec<&str> = mac_str.split(':').collect();
+                                            if parts.len() == 6 {
+                                                for i in 0..6 {
+                                                    mac_bytes[i] = u8::from_str_radix(parts[i], 16).unwrap_or(0);
+                                                }
+                                                if status == "command_blocked" || status == "command_suspicious" {
+                                                    let _ = cmd_tx_lis.send(ExecutionCommand::BlockMac(mac_bytes, "Cloud ML Verdict: Threat Detected".to_string())).await;
+                                                } else if status == "command_allowed" {
+                                                    let _ = cmd_tx_lis.send(ExecutionCommand::AllowMac(mac_bytes)).await;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+
+            // Wait for either the global shutdown, or for the connection token to trip
+            tokio::select! {
+                _ = ct_loop.cancelled() => {
+                    println!("🛑 Global shutdown requested. Closing tunnel...");
+                    conn_token.cancel();
+                    break;
+                }
+                _ = conn_token.cancelled() => {
+                    println!("⚠️ Tunnel collapsed. Re-establishing in 5 seconds...");
+                    tokio::select! {
+                        _ = ct_loop.cancelled() => break,
+                        _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+                    }
+                }
             }
         }
     });
+
     tokio::select! {
         _ = signal::ctrl_c() => {
             println!("\n🛑 Graceful Shutdown Initiated! Alerting threads...");
             cancel_token.cancel();
         }
     }
-    let _ = tokio::join!(handle_hb, handle_0, handle_1, handle_2, handle_3);
+    
+    // Wait for the primary threads to close safely
+    let _ = tokio::join!(handle_hb, handle_0, handle_1, handle_reconnect);
     println!("✅ All threads safely terminated. eBPF links detached. Goodbye.");
     Ok(())
 }
