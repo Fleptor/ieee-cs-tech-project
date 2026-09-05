@@ -9,23 +9,19 @@ use std::sync::{Arc, Mutex};
 use tokio::time::{interval, Duration};
 use std::time;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-
 use rustc_hash::{FxHashMap}; 
 use hyperloglog::HyperLogLog;
-
 use futures_util::{StreamExt, SinkExt};
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 
-// Assuming you ran `make flatbuffers` and the generated file is in src/
 #[allow(dead_code, unused_imports, clippy::all, mismatched_lifetime_syntaxes, elided_lifetimes_in_paths, unsafe_op_in_unsafe_fn)]
 #[path = "router_generated.rs"]
 mod router_generated;
 use router_generated::*;
 
-// --- THE ACTOR PATTERN COMMAND ENUM ---
 #[derive(Debug)]
 enum ExecutionCommand {
     BlockMac([u8; 6], String),
@@ -35,7 +31,6 @@ enum ExecutionCommand {
     UpdateBannedIps(Vec<IpAddr>)
 }
 
-// 1. The API Boundary: The Optimized 32-Byte Struct
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy)]
 pub struct LogEvent {
@@ -50,7 +45,6 @@ pub struct LogEvent {
     pub flags: u8,
 } 
 
-// 2A. The Short-Term AI Aggregator (Wiped every 10s for the Cloud)
 struct DeviceTotals {
     bytes_in: u64,
     bytes_out: u64,
@@ -85,7 +79,6 @@ impl Default for DeviceTotals {
     }
 }
 
-// 2B. The Long-Term Connection Tracker (Pillar 6: State Exhaustion)
 #[derive(Debug)]
 struct TcpSession {
     start_time: time::Instant,
@@ -94,7 +87,6 @@ struct TcpSession {
     is_vip: bool
 }
 
-// 2C. The Master State Wrapper
 struct DeviceState {
     totals: DeviceTotals,
     last_seen: time::Instant,
@@ -122,12 +114,12 @@ struct ReportForDb {
 async fn main() -> Result<(), anyhow::Error> {
     println!("🛡️ Initializing Project_CIPHER Trust Score Engine...");
 
-    let mut bpf = Ebpf::load_file("../ebpf/target/cipher_ebpf.o")
+    let mut bpf = Ebpf::load_file("Router/ebpf/target/cipher_ebpf.o")
         .context("Failed to load the eBPF object file. Did you compile the C code?")?;
 
     println!("✅ eBPF ELF loaded successfully.");
 
-    // --- INTERFACE MAPPING LOGIC ---
+    // INTERFACE MAPPING LOGIC
     let test_iface = "enp0s8"; 
     let c_iface = CString::new(test_iface).unwrap();
     let ifindex = unsafe { libc::if_nametoindex(c_iface.as_ptr()) };
@@ -142,7 +134,7 @@ async fn main() -> Result<(), anyhow::Error> {
     program.attach(test_iface, XdpMode::Skb)
         .context(format!("Failed to attach XDP to {}", test_iface))?;
     
-    // --- CREATE DATABASE --- 
+    // CREATE DATABASE 
     let options = sqlx::sqlite::SqliteConnectOptions::new()
         .filename("router.db")
         .create_if_missing(true)
@@ -153,7 +145,7 @@ async fn main() -> Result<(), anyhow::Error> {
         .unwrap();
     sqlx::migrate!("./migrations").run(&db).await.unwrap();
 
-    // --- CONNECT TO AXUM CLOUD ---
+    // CONNECT TO AXUM CLOUD
     let network_id = "NET_123";
     let cloud_url = format!("wss://localhost:3000/api/router/ws/{}", network_id);
     println!("🔌 Connecting to Axum Cloud at {}...", cloud_url);
@@ -167,7 +159,7 @@ async fn main() -> Result<(), anyhow::Error> {
     // Inject the authentication header so Axum's `RouterKey` extractor accepts us!
     request.headers_mut().insert("Authorization", auth_header_value.parse().expect("Invalid Authorization Header Format"));
 
-    // --- NEW: BYPASS SELF-SIGNED CERTIFICATE VALIDATION ---
+    // NEW: BYPASS SELF-SIGNED CERTIFICATE VALIDATION
     use native_tls::TlsConnector;
     use tokio_tungstenite::Connector;
 
@@ -188,7 +180,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
     let cancel_token = CancellationToken::new();
 
-    // --- THE GLOBAL AI MEMORY BANK ---
+    // THE GLOBAL AI MEMORY BANK
     let telemetry_state: Arc<Mutex<FxHashMap<[u8; 6], DeviceState>>> = Arc::new(Mutex::new(FxHashMap::default()));
 
     let mut heartbeat_map: Array<_, u64> = Array::try_from(bpf.take_map("Heartbeat").expect("Heartbeat map not found"))
@@ -214,7 +206,7 @@ async fn main() -> Result<(), anyhow::Error> {
         }
     });
 
-    // --- THREAD 0: THE EXECUTIONER (eBPF Map Manager) ---
+    // THREAD 0: THE EXECUTIONER (eBPF Map Manager)
     let mut mac_list: BpfHashMap<_, [u8; 6], u8> = BpfHashMap::try_from(bpf.take_map("MAC_list").expect("MAC_list map not found"))
         .context("Failed to map MAC_list")?;
     let mut vip_map: BpfHashMap<_, [u8; 28], u64> = BpfHashMap::try_from(bpf.take_map("fast_path_vip").expect("fast_path_vip map not found"))
@@ -306,7 +298,7 @@ async fn main() -> Result<(), anyhow::Error> {
         }
     });
 
-    // --- THREAD 1: THE KERNEL HARVESTER ---
+    // THREAD 1: THE KERNEL HARVESTER
     let telemetry_clone = Arc::clone(&telemetry_state);
     let cmd_tx_harvester = cmd_tx.clone();
     let ct_1 = cancel_token.clone();
@@ -437,7 +429,7 @@ async fn main() -> Result<(), anyhow::Error> {
                     if processed_in_batch >= 100 { break; } 
                 }
 
-                // --- PILLAR 6 GARBAGE COLLECTOR (Runs every 10 seconds) ---
+                // PILLAR 6 GARBAGE COLLECTOR (Runs every 10 seconds)
                 if last_gc.elapsed().as_secs() >= 10 {
                     
                     let mut mac_to_remove = Vec::new();
@@ -488,7 +480,7 @@ async fn main() -> Result<(), anyhow::Error> {
             }
         }
     });
-    // --- THREAD 2: THE CLOUD REPORTER (WebSocket Sender) ---
+    // THREAD 2: THE CLOUD REPORTER (WebSocket Sender)
     let telemetry_reporter_clone = Arc::clone(&telemetry_state);
     let db_vault = db.clone();
     let ct_2 = cancel_token.clone();
@@ -622,7 +614,7 @@ async fn main() -> Result<(), anyhow::Error> {
         }
     });
 
-    // --- THREAD 3: THE CLOUD LISTENER (WebSocket Receiver) ---
+    // THREAD 3: THE CLOUD LISTENER (WebSocket Receiver)
     let cmd_tx_cloud = cmd_tx.clone();
     let ct_3 = cancel_token.clone();
     let handle_3 = tokio::spawn(async move {
@@ -637,7 +629,7 @@ async fn main() -> Result<(), anyhow::Error> {
                     if let Ok(Message::Binary(bytes)) = msg {
                         if let Ok(response) = flatbuffers::root::<RouterResponse>(&bytes) {
                             if let Some(status) = response.status() {
-                                // --- NEW: THREAT INTEL EXTRACTION ---
+                                // NEW: THREAT INTEL EXTRACTION
                                 if status == "threat_intel" {
                                     if let Some(intel) = response.threat_intel() {
                                         // 1. Unpack Ad Domains
@@ -660,7 +652,7 @@ async fn main() -> Result<(), anyhow::Error> {
                                         }
                                     }
                                 } 
-                                // --- EXISTING: INDIVIDUAL MAC COMMANDS ---
+                                // EXISTING: INDIVIDUAL MAC COMMANDS
                                 else if let Some(mac_str) = response.mac() {
                                     println!("☁️ [CLOUD COMMAND] Received {} for MAC: {}", status, mac_str);
 

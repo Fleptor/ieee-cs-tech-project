@@ -143,7 +143,7 @@ static __always_inline int log_v4(__u8 *internal_mac, __u32 ip_addr, __u16 src_p
 static __always_inline int log_v6(__u8 *internal_mac, void *ip_addr, __u16 src_port, __u16 dst_port, __u16 payload_len, __u8 layer_4_protocol, __u8 tcp_flags, __u8 flags) {
     struct flow_key key;
     __builtin_memset(&key, 0, sizeof(key));
-    __builtin_memcpy(key.external_ip, &ip_addr, 4);
+    __builtin_memcpy(key.external_ip, &ip_addr, 16);
     __builtin_memcpy(key.internal_mac, internal_mac, 6);
     key.src_port = src_port;
     key.dst_port = dst_port;
@@ -406,7 +406,6 @@ int xdp_router_prog(struct xdp_md *ctx) {
 
     __u32 hb_key = 0;
     __u64 *last_hb = bpf_map_lookup_elem(&Heartbeat, &hb_key);
-    bool fail_open = false;
 
     if (likely(last_hb)) {
         __u64 current_time = bpf_ktime_get_ns();
@@ -416,7 +415,7 @@ int xdp_router_prog(struct xdp_md *ctx) {
         } else if (current_time - *last_hb > 15000000000ULL) {
             // 15 Seconds have passed! The Rust Daemon has crashed. 
             // Activate Fail-Open mode to keep the network alive.
-            fail_open = true; 
+            return XDP_PASS; 
         }
     }
 

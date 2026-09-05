@@ -26,12 +26,12 @@ daemon:
 # 3. Optional: Re-generate the schema_generated.rs from your FlatBuffer schema
 flatbuffers:
 	@echo "📦 Generating FlatBuffers Rust code..."
-	flatc --rust -o daemon/src/ router.fbs
+	flatc --rust -o Router/daemon/src/ router.fbs
 	@echo "✅ FlatBuffers updated!"
 
 # 4. Clean the workspace
 clean:
 	@echo "🧹 Cleaning up..."
 	rm -rf ebpf/target
-	cd daemon && cargo clean
+	cd Router/daemon && cargo clean
 	@echo "✅ Workspace clean."
