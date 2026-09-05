@@ -1,6 +1,7 @@
 use axum::{Router, routing::{get, post, delete}};
 use std::net::SocketAddr;
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::services::{ServeDir, ServeFile};
 use tokio::sync::broadcast;
 mod ai;
 mod auth;
@@ -95,6 +96,15 @@ async fn main() {
     let app_state = crate::models::AppState { db, tx, threat_intel};
     let cors = CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any);
 
+    let static_path = if std::path::Path::new("ui-dashboard").exists() {
+        "ui-dashboard"
+    } else {
+        "../ui-dashboard"
+    };
+
+    let serve_dir = ServeDir::new(static_path)
+        .not_found_service(ServeFile::new(format!("{}/index.html", static_path)));
+
     let app = Router::new()
         .route("/api/owner/set_admin", post(make_network_and_assign_admin))
         .route("/api/Main/signup", post(signup_user))
@@ -106,6 +116,7 @@ async fn main() {
         .route("/api/delete_device", delete(delete_device))
         .route("/api/change_state", post(change_state))
         .route("/api/router/ws/:network_id", get(router_ws_handler))
+        .fallback_service(serve_dir)
         .with_state(app_state)
         .layer(cors);
 

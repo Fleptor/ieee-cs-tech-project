@@ -1,0 +1,382 @@
+/* ==========================================================================
+   Project CIPHER - Network Detection & Response Console
+   Module: overview.css - KPI Telemetry, Incident Stream, Traffic Chart & Decoder
+   ========================================================================== */
+
+/* ==========================================================================
+   1. KPI Telemetry Summary Strip
+   ========================================================================== */
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+  margin-bottom: 2px;
+}
+
+.kpi-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  position: relative;
+}
+
+.kpi-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.kpi-label {
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--text-muted);
+}
+
+.kpi-tag {
+  font-size: 0.62rem;
+  font-family: var(--font-mono);
+  color: var(--text-dim);
+}
+
+.kpi-value {
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: var(--text-highlight);
+  font-family: var(--font-mono);
+  letter-spacing: -0.3px;
+  margin-bottom: 2px;
+  line-height: 1.2;
+}
+
+.kpi-subtext {
+  font-size: 0.68rem;
+  color: var(--text-dim);
+}
+
+.kpi-subtext.highlight {
+  color: var(--accent-emerald-text);
+}
+
+.kpi-subtext.warning {
+  color: var(--accent-crimson-text);
+}
+
+/* ==========================================================================
+   2. Dense Incident Stream (Structured Rows)
+   ========================================================================== */
+.incident-stream-card {
+  border: 1px solid var(--border-color);
+  background: var(--bg-surface);
+}
+
+.audit-stream {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 300px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.audit-card {
+  background: var(--bg-surface-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: background-color var(--transition-fast);
+}
+
+.audit-card:hover {
+  background: var(--bg-surface-hover);
+}
+
+.audit-card.threat {
+  border-left: 3px solid var(--accent-crimson);
+}
+
+.audit-card.benign {
+  border-left: 3px solid var(--border-strong);
+}
+
+.audit-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.threat-tag {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--text-highlight);
+}
+
+.confidence-score {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  background: var(--bg-input);
+  padding: 1px 6px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border-subtle);
+}
+
+.audit-card.threat .confidence-score {
+  color: var(--accent-crimson-text);
+  border-color: rgba(239, 68, 68, 0.2);
+}
+
+.audit-body {
+  font-size: 0.75rem;
+  color: var(--text-body);
+  line-height: 1.4;
+  font-family: var(--font-mono);
+}
+
+.audit-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.68rem;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  padding-top: 4px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* ==========================================================================
+   3. Telemetry Stream & Segmented Metric Bar
+   ========================================================================== */
+.telemetry-chart-wrap {
+  width: 100%;
+  height: 220px;
+  position: relative;
+}
+
+.metric-strip-segmented {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  margin-top: 14px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface-subtle);
+  overflow: hidden;
+}
+
+.metric-strip-col {
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-right: 1px solid var(--border-color);
+}
+
+.metric-strip-col:last-child {
+  border-right: none;
+}
+
+.metric-strip-label {
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+}
+
+.metric-tile-val {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 1.15rem;
+  color: var(--text-highlight);
+  line-height: 1.2;
+}
+
+.metric-strip-sub {
+  font-size: 0.65rem;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+}
+
+/* ==========================================================================
+   4. Split Section (Traffic + Fleet Risk Table)
+   ========================================================================== */
+.dashboard-split {
+  display: grid;
+  grid-template-columns: 1.25fr 0.75fr;
+  gap: 16px;
+}
+
+.empty-state-notice {
+  padding: 24px 14px;
+  text-align: center;
+  background: var(--bg-surface-subtle);
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius-sm);
+  margin-top: 8px;
+}
+
+.empty-state-text {
+  font-size: 0.76rem;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
+.risk-fleet-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 2px;
+}
+
+.risk-fleet-table th {
+  padding: 6px 8px;
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--text-muted);
+  font-weight: 700;
+  border-bottom: 1px solid var(--border-color);
+  text-align: left;
+}
+
+.risk-fleet-table td {
+  padding: 8px;
+  font-size: 0.76rem;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-body);
+}
+
+.risk-fleet-table tr:hover td {
+  background: var(--bg-surface-subtle);
+}
+
+.risk-rank-badge {
+  font-size: 0.62rem;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: var(--radius-xs);
+  display: inline-block;
+}
+
+.risk-rank-badge.high {
+  background: var(--accent-crimson-light);
+  color: var(--accent-crimson-text);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+}
+
+.risk-rank-badge.med {
+  background: var(--accent-amber-light);
+  color: var(--accent-amber-text);
+  border: 1px solid rgba(245, 158, 11, 0.25);
+}
+
+.risk-rank-badge.low {
+  background: var(--accent-emerald-light);
+  color: var(--accent-emerald-text);
+  border: 1px solid rgba(16, 185, 129, 0.25);
+}
+
+.risk-rank-badge.neutral {
+  background: var(--bg-input);
+  color: var(--text-muted);
+  border: 1px solid var(--border-subtle);
+}
+
+/* ==========================================================================
+   5. Diagnostic Bitmask Flag Decoder
+   ========================================================================== */
+.bitmask-container {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.bit-box {
+  background: var(--bg-surface-subtle);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: background-color var(--transition-fast), border-color var(--transition-fast);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.bit-box:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-surface-hover);
+}
+
+.bit-box.active {
+  background: var(--bg-surface-active);
+  border-color: var(--brand-primary);
+}
+
+.bit-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+
+.bit-box.active .bit-header {
+  color: var(--brand-primary-text);
+  font-weight: 700;
+}
+
+.bit-name {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--text-highlight);
+  font-family: var(--font-mono);
+}
+
+.bit-desc {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  line-height: 1.35;
+}
+
+/* Responsive */
+@media (max-width: 1080px) {
+  .kpi-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .dashboard-split {
+    grid-template-columns: 1fr;
+  }
+  .bitmask-container {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 580px) {
+  .kpi-grid {
+    grid-template-columns: 1fr;
+  }
+  .metric-strip-segmented {
+    grid-template-columns: 1fr;
+  }
+  .metric-strip-col {
+    border-right: none;
+    border-bottom: 1px solid var(--border-color);
+  }
+  .metric-strip-col:last-child {
+    border-bottom: none;
+  }
+  .bitmask-container {
+    grid-template-columns: 1fr;
+  }
+}

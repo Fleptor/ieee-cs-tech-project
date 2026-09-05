@@ -120,7 +120,7 @@ async fn main() -> Result<(), anyhow::Error> {
     println!("✅ eBPF ELF loaded successfully.");
 
     // INTERFACE MAPPING LOGIC
-    let test_iface = "enp0s8"; 
+    let test_iface = "enp7s0"; 
     let c_iface = CString::new(test_iface).unwrap();
     let ifindex = unsafe { libc::if_nametoindex(c_iface.as_ptr()) };
     println!("📡 Mapped interface '{}' to OS Index: {}", test_iface, ifindex);

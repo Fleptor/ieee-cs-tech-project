@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Project CIPHER - Network Detection & Response Console</title>
+  
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  
+  <!-- Modular Console Stylesheets -->
+  <link rel="stylesheet" href="css/base.css">
+  <link rel="stylesheet" href="css/layout.css">
+  <link rel="stylesheet" href="css/components.css">
+  <link rel="stylesheet" href="css/overview.css">
+  <link rel="stylesheet" href="css/devices.css">
+</head>
+<body>
+
+<div id="app">
+
+  <!-- ======================================================================
+       1. Single Operator Sidebar
+       ====================================================================== -->
+  <aside class="sidebar">
+    <div class="brand-header">
+      <div class="sidebar-brand-title">
+        <div class="sidebar-brand-icon">C</div>
+        <span class="sidebar-main-title">CIPHER NDR</span>
+        <span class="sidebar-title-badge">Sensor Active</span>
+      </div>
+      <button class="btn btn-secondary btn-sm" onclick="fetchDevices()" title="Refresh hardware list">Sync</button>
+    </div>
+
+    <!-- Active Network Context Selector -->
+    <div class="sidebar-network-wrap">
+      <label for="network-select" class="sidebar-network-label">Active Network</label>
+      <select id="network-select" class="network-select">
+        <option value="network-alpha-01">network-alpha-01 (Primary)</option>
+        <option value="corporate-dmz-02">corporate-dmz-02 (Datacenter)</option>
+        <option value="edge-router-soho">edge-router-soho (Branch)</option>
+      </select>
+    </div>
+
+    <!-- Active Signals Summary -->
+    <div class="sidebar-signals-card">
+      <div class="signals-header">
+        <span>Active signals</span>
+        <span class="status-dot active" title="Sensor online"></span>
+      </div>
+      <div class="signals-grid">
+        <div class="signal-tile critical" title="Critical incidents requiring block">
+          <span class="signal-val crimson" id="sig-critical-count">—</span>
+          <span class="signal-label">Critical</span>
+        </div>
+        <div class="signal-tile warning" title="Statistical anomalies flagged">
+          <span class="signal-val amber" id="sig-warning-count">—</span>
+          <span class="signal-label">Flagged</span>
+        </div>
+        <div class="signal-tile quarantine" title="Devices blocked in eBPF map">
+          <span class="signal-val crimson" id="sig-blocked-count">—</span>
+          <span class="signal-label">Isolated</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Primary Navigation Menu -->
+    <ul class="nav-menu">
+      <li>
+        <a class="nav-item active" data-tab="overview" href="#overview">
+          <span>Overview</span>
+        </a>
+      </li>
+      <li>
+        <a class="nav-item" data-tab="ai-telemetry" href="#ai-telemetry">
+          <span>Incidents</span>
+        </a>
+      </li>
+      <li>
+        <a class="nav-item" data-tab="devices" href="#devices">
+          <span>Device fleet</span>
+          <span class="nav-badge" id="nav-device-count">—</span>
+        </a>
+      </li>
+      <li>
+        <a class="nav-item" data-tab="threat-intel" href="#threat-intel">
+          <span>Threat intelligence</span>
+        </a>
+      </li>
+    </ul>
+
+    <!-- Secondary Architecture Documentation Link -->
+    <div class="sidebar-secondary-links">
+      <a class="nav-item secondary-nav-link" data-tab="pillars" href="#pillars" title="Architecture documentation">
+        <span>Architecture docs</span>
+      </a>
+    </div>
+
+    <!-- Subsystem Status Monitor - Exact 3 Status Dots in Order -->
+    <div class="subsystem-monitor">
+      <div class="subsystem-title">
+        <span>System health</span>
+        <span class="status-dot active"></span>
+      </div>
+      <div class="subsystem-list">
+        <div class="subsystem-item">
+          <span>Data Plane (XDP)</span>
+          <span class="status-dot active" title="NIC driver polling active"></span>
+        </div>
+        <div class="subsystem-item">
+          <span>Edge Daemon (Rust)</span>
+          <span class="status-dot active" title="Rust edge daemon active"></span>
+        </div>
+        <div class="subsystem-item">
+          <span>Cloud Tunnel (Axum)</span>
+          <span class="status-dot active" title="FlatBuffers WebSocket stream"></span>
+        </div>
+        <div class="subsystem-item">
+          <span>Watchdog failsafe</span>
+          <span id="watchdog-timer" style="font-family: var(--font-mono); color: var(--brand-primary-text); font-weight: 700;">5s</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- User Profile & Auth Panel -->
+    <div class="user-panel">
+      <div class="user-info">
+        <span class="user-name" id="display-username">Guest Operator</span>
+        <span class="user-role" id="display-user-role">Read-Only Sandbox</span>
+      </div>
+      <div>
+        <button class="btn btn-secondary btn-sm" id="btn-open-auth">Sign in</button>
+        <button class="btn btn-secondary btn-sm" id="btn-logout" style="display: none;">Logout</button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ======================================================================
+       2. Main Workspace Area
+       ====================================================================== -->
+  <main class="main-wrapper">
+
+    <!-- Topbar -->
+    <header class="topbar">
+      <div class="topbar-left">
+        <button class="btn btn-icon" id="menu-toggle" style="display: none;" aria-label="Toggle Menu">☰</button>
+      </div>
+
+      <div class="topbar-right">
+        <div class="live-pill">
+          <span class="status-dot active"></span>
+          <span>FlatBuffers telemetry stream</span>
+        </div>
+        <button class="btn btn-primary btn-sm" onclick="fetchDevices()">Sync hardware</button>
+      </div>
+    </header>
+
+    <!-- Page Content Views -->
+    <div class="page-content">
+
+      <!-- ==================== VIEW 1: OVERVIEW ==================== -->
+      <section id="view-overview" class="view-section active">
+        
+        <!-- Section Header -->
+        <div class="section-header">
+          <div class="section-title-wrap">
+            <h2>Overview</h2>
+            <p>XDP data plane monitoring and telemetry</p>
+          </div>
+          <div>
+            <span class="live-pill" id="watchdog-status-text">Protected (eBPF XDP)</span>
+          </div>
+        </div>
+
+        <!-- 1. KPI Metrics Summary Strip (Truthful Unconnected State) -->
+        <div class="kpi-grid">
+          <div class="kpi-card">
+            <div class="kpi-top">
+              <span class="kpi-label">Active hardware</span>
+              <span class="kpi-tag">RAM</span>
+            </div>
+            <div class="kpi-value" id="kpi-active-devices">—</div>
+            <div class="kpi-subtext">RAM tracking</div>
+          </div>
+
+          <div class="kpi-card">
+            <div class="kpi-top">
+              <span class="kpi-label">Packets evaluated</span>
+              <span class="kpi-tag">TOTAL</span>
+            </div>
+            <div class="kpi-value" id="kpi-total-packets">—</div>
+            <div class="kpi-subtext">Total evaluated</div>
+          </div>
+
+          <div class="kpi-card">
+            <div class="kpi-top">
+              <span class="kpi-label">Hardware drops</span>
+              <span class="kpi-tag">XDP</span>
+            </div>
+            <div class="kpi-value" id="kpi-dropped-packets" style="color: var(--accent-crimson-text);">—</div>
+            <div class="kpi-subtext warning">eBPF drop counter</div>
+          </div>
+
+          <div class="kpi-card">
+            <div class="kpi-top">
+              <span class="kpi-label">Elephant fast-path</span>
+              <span class="kpi-tag">LRU</span>
+            </div>
+            <div class="kpi-value" id="kpi-elephant-bypass">—</div>
+            <div class="kpi-subtext">Statistical sampling</div>
+          </div>
+        </div>
+
+        <!-- 2. Incidents Stream (Top Priority) -->
+        <div class="card incident-stream-card">
+          <div class="card-header">
+            <h3 class="card-title">
+              <span>Incidents</span>
+              <span class="badge">Layer 2 supervisor decision feed</span>
+            </h3>
+            <span class="live-pill" style="font-size: 0.7rem;">Active monitoring</span>
+          </div>
+          <div class="audit-stream" id="audit-stream-container">
+            <!-- Populated dynamically by app.js -->
+          </div>
+        </div>
+
+        <!-- 3. Split Section: Traffic Trend & Fleet Risk -->
+        <div class="dashboard-split">
+          
+          <!-- Left: Real-Time Traffic Stream & Segmented Metric Bar -->
+          <div class="card">
+            <div class="card-header">
+              <h3 class="card-title">
+                <span>Traffic</span>
+                <span class="badge">FlatBuffers pipeline</span>
+              </h3>
+              <div style="display: flex; gap: 12px; font-size: 0.74rem; font-family: var(--font-mono);">
+                <span style="color: var(--accent-cyan-text); font-weight: 600;">● Inbound</span>
+                <span style="color: var(--accent-indigo-text); font-weight: 600;">● Outbound</span>
+              </div>
+            </div>
+
+            <div class="telemetry-chart-wrap">
+              <canvas id="telemetry-chart"></canvas>
+            </div>
+
+            <!-- Segmented Metric Bar -->
+            <div class="metric-strip-segmented">
+              <div class="metric-strip-col">
+                <span class="metric-strip-label">Tier 1 Z-score</span>
+                <div class="metric-tile-val" id="metric-zscore" style="color: var(--accent-cyan-text);">—</div>
+                <span class="metric-strip-sub">Threshold: 3.0</span>
+              </div>
+
+              <div class="metric-strip-col">
+                <span class="metric-strip-label">Port entropy</span>
+                <div class="metric-tile-val" id="metric-entropy">—</div>
+                <span class="metric-strip-sub">Range: 0.0 – 4.0</span>
+              </div>
+
+              <div class="metric-strip-col">
+                <span class="metric-strip-label">Exfiltration ratio</span>
+                <div class="metric-tile-val" id="metric-exfil" style="color: var(--accent-emerald-text);">—</div>
+                <span class="metric-strip-sub">Out / In bytes</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right: Fleet Risk Truthful Empty/Loading State -->
+          <div class="card" style="display: flex; flex-direction: column; justify-content: space-between;">
+            <div>
+              <div class="card-header">
+                <h3 class="card-title">
+                  <span>Fleet risk</span>
+                  <span class="badge">Device anomaly ranking</span>
+                </h3>
+              </div>
+
+              <div class="empty-state-notice">
+                <p class="empty-state-text">Risk ranking becomes available after device telemetry is received.</p>
+              </div>
+            </div>
+
+            <button class="btn btn-secondary btn-full" style="margin-top: 12px;" onclick="document.querySelector('.nav-item[data-tab=devices]').click()">
+              View device fleet
+            </button>
+          </div>
+
+        </div>
+
+        <!-- 4. Diagnostic Bitmask Flag Decoder -->
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">
+              <span>Diagnostic flag decoder</span>
+              <span class="badge" id="bitmask-raw-value">0x07 (7)</span>
+            </h3>
+            <span style="font-family: var(--font-mono); font-size: 0.78rem; color: var(--brand-primary-text); font-weight: 600;">
+              Binary mask: <strong id="bitmask-binary-value">00000111</strong>
+            </span>
+          </div>
+          <p style="font-size: 0.76rem; color: var(--text-muted); margin-bottom: 2px;">
+            Diagnostic flag decoder. Toggle bits locally to inspect combinations.
+          </p>
+          <div class="bitmask-container" id="bitmask-grid">
+            <!-- Dynamically populated by app.js -->
+          </div>
+        </div>
+      </section>
+
+      <!-- ==================== VIEW 2: DEVICE FLEET ==================== -->
+      <section id="view-devices" class="view-section">
+        <div class="section-header">
+          <div class="section-title-wrap">
+            <h2>Devices and enforcement</h2>
+            <p>Hardware inventory and eBPF MAC map enforcement</p>
+          </div>
+          <div>
+            <button class="btn btn-secondary btn-sm" onclick="fetchDevices()">Refresh devices</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="table-responsive">
+            <table class="custom-table">
+              <thead>
+                <tr>
+                  <th>Device / Manufacturer</th>
+                  <th>IP Address</th>
+                  <th>MAC Address</th>
+                  <th>Security State</th>
+                  <th>Last Seen</th>
+                  <th>Hardware Actions</th>
+                </tr>
+              </thead>
+              <tbody id="devices-table-body">
+                <!-- Dynamically populated by app.js -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ==================== VIEW 3: INCIDENTS & DETECTION METHODOLOGY ==================== -->
+      <section id="view-ai-telemetry" class="view-section">
+        <div class="section-header">
+          <div class="section-title-wrap">
+            <h2>Detection methodology</h2>
+            <p>Tier 1 statistical baseline and Tier 2 cognitive supervisor specifications</p>
+          </div>
+          <div>
+            <button class="btn btn-secondary btn-sm" onclick="document.querySelector('.nav-item[data-tab=overview]').click()">View live overview</button>
+          </div>
+        </div>
+
+        <div class="dashboard-split">
+          <div class="card">
+            <div class="card-header">
+              <h3 class="card-title">Tier 1: Mathematical Z-score profiler</h3>
+              <span class="badge">&lt; 3 &mu;s execution</span>
+            </div>
+            <p style="font-size: 0.8rem; color: var(--text-muted); line-height: 1.5; margin-bottom: 12px;">
+              Executes in the Rust edge daemon using <code>ndarray</code>. Maintains a 50-sample baseline memory buffer to compute Mean (&mu;) and Standard Deviation (&sigma;) across security dimensions:
+            </p>
+            <div class="formula-box">
+              Z = |X - &mu;| / (&sigma; + 10⁻⁸)
+            </div>
+            <ul class="ai-feature-list">
+              <li><strong>Exfiltration ratio:</strong> Bytes out over bytes in, isolating heavy egress from download traffic.</li>
+              <li><strong>Connection failure rate:</strong> Spikes in dropped frames and TCP resets indicating network scans.</li>
+              <li><strong>Shannon port entropy:</strong> Identifies bindings across high-numbered dynamic ports.</li>
+              <li><strong>Anomaly trigger threshold:</strong> Any metric exceeding Z &gt; 3.0 triggers Tier 2 evaluation.</li>
+            </ul>
+          </div>
+
+          <div class="card">
+            <div class="card-header">
+              <h3 class="card-title">Tier 2: Cognitive LLM supervisor</h3>
+              <span class="badge">Deterministic evaluation</span>
+            </div>
+            <p style="font-size: 0.8rem; color: var(--text-muted); line-height: 1.5; margin-bottom: 12px;">
+              Upon Tier 1 threshold breach, the Axum control plane dispatches asynchronous telemetry to the LLM supervisor with temperature fixed to 0.1 and strict schema enforcement:
+            </p>
+            <pre class="schema-box">
+{
+  "threat_name": "Data Exfiltration Breach",
+  "confidence": 96,
+  "human_explanation": "Outbound spike on unusual dynamic port",
+  "should_block": true
+}</pre>
+            <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 10px; line-height: 1.45;">
+              When <code>should_block = true</code>, the control plane issues an in-kernel quarantine update to the eBPF MAC map.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ==================== VIEW 4: THREAT INTEL ==================== -->
+      <section id="view-threat-intel" class="view-section">
+        <div class="section-header">
+          <div class="section-title-wrap">
+            <h2>Threat intelligence</h2>
+            <p>Kernel-synchronized blocklists and domain sinkhole feeds</p>
+          </div>
+          <div>
+            <span class="live-pill">Feed refresh interval: 12h</span>
+          </div>
+        </div>
+
+        <div class="dashboard-split">
+          <div class="card">
+            <div class="card-header">
+              <h3 class="card-title">Emerging Threats C2 IP blocklist</h3>
+              <span class="badge">eBPF LRU Map</span>
+            </div>
+            <ul id="threat-intel-ips">
+              <!-- Populated dynamically by app.js -->
+            </ul>
+          </div>
+
+          <div class="card">
+            <div class="card-header">
+              <h3 class="card-title">StevenBlack DNS sinkhole domains</h3>
+              <span class="badge">Bloom Filter O(1)</span>
+            </div>
+            <ul id="threat-intel-domains">
+              <!-- Populated dynamically by app.js -->
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <!-- ==================== VIEW 5: ARCHITECTURAL PILLARS (REFERENCE) ==================== -->
+      <section id="view-pillars" class="view-section">
+        <div class="section-header">
+          <div class="section-title-wrap">
+            <h2>Architecture documentation</h2>
+            <p>Ten core design specifications for Project CIPHER</p>
+          </div>
+        </div>
+
+        <div class="pillars-grid">
+          <div class="pillar-card">
+            <div class="pillar-number">PILLAR 01</div>
+            <div class="pillar-title">eBPF/XDP Zero-Copy Execution</div>
+            <div class="pillar-desc">Evaluates packets at the NIC driver level, dropping attacks before sk_buff memory allocation.</div>
+          </div>
+
+          <div class="pillar-card">
+            <div class="pillar-number">PILLAR 02</div>
+            <div class="pillar-title">Split-Plane Architecture</div>
+            <div class="pillar-desc">Decouples high-speed data plane processing on the router from the cloud control plane.</div>
+          </div>
+
+          <div class="pillar-card">
+            <div class="pillar-number">PILLAR 03</div>
+            <div class="pillar-title">8-Bit Threat Diagnostic Mask</div>
+            <div class="pillar-desc">Packs multidimensional kernel verdicts into a single byte of memory via bitwise flags.</div>
+          </div>
+
+          <div class="pillar-card">
+            <div class="pillar-number">PILLAR 04</div>
+            <div class="pillar-title">DNS Sinkholing via Bloom Filters</div>
+            <div class="pillar-desc">O(1) time complexity mathematical Bloom Filters inside kernel memory for domain blocking.</div>
+          </div>
+
+          <div class="pillar-card">
+            <div class="pillar-number">PILLAR 05</div>
+            <div class="pillar-title">Layer 4 Heuristic Analysis</div>
+            <div class="pillar-desc">Detection of RFC protocol violations, invalid TCP flag combinations, and legacy protocol usage.</div>
+          </div>
+
+          <div class="pillar-card">
+            <div class="pillar-number">PILLAR 06</div>
+            <div class="pillar-title">TCP Session Tracking (Fast Path)</div>
+            <div class="pillar-desc">Bypasses deep inspection for elephant flows via LRU hash maps with statistical sampling.</div>
+          </div>
+
+          <div class="pillar-card">
+            <div class="pillar-number">PILLAR 07</div>
+            <div class="pillar-title">Zero-Trust WebSockets & Argon2id</div>
+            <div class="pillar-desc">Memory-hard password hashing and cryptographic HTTP upgrade handshake validation.</div>
+          </div>
+
+          <div class="pillar-card">
+            <div class="pillar-number">PILLAR 08</div>
+            <div class="pillar-title">Probabilistic Memory (HyperLogLog)</div>
+            <div class="pillar-desc">Static RAM footprint per device for cardinality estimation, immune to state exhaustion attacks.</div>
+          </div>
+
+          <div class="pillar-card">
+            <div class="pillar-number">PILLAR 09</div>
+            <div class="pillar-title">Two-Tier Hybrid Detection Engine</div>
+            <div class="pillar-desc">Combines sub-millisecond Z-Score statistical reflexes with LLM cognitive supervisor analysis.</div>
+          </div>
+
+          <div class="pillar-card">
+            <div class="pillar-number">PILLAR 10</div>
+            <div class="pillar-title">Fail-Open Watchdog</div>
+            <div class="pillar-desc">Hardware-level fault tolerance bypassing quarantine if user-space heartbeat stops.</div>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </main>
+
+  <!-- ======================================================================
+       3. Authentication Modal
+       ====================================================================== -->
+  <div class="modal-overlay" id="auth-modal">
+    <div class="modal-box">
+      <button class="modal-close" id="btn-close-auth">&times;</button>
+      <div class="modal-header">
+        <h3 id="auth-modal-title">Authenticate to CIPHER</h3>
+        <p>Enter administrator credentials to manage physical hardware and security policies.</p>
+      </div>
+
+      <form id="auth-form">
+        <div class="form-group">
+          <label for="auth-username">Username</label>
+          <input type="text" id="auth-username" class="form-input" placeholder="admin_soc" required>
+        </div>
+
+        <div class="form-group">
+          <label for="auth-email">Email Address</label>
+          <input type="email" id="auth-email" class="form-input" placeholder="admin@cipher.security" required>
+        </div>
+
+        <div class="form-group">
+          <label for="auth-password">Password</label>
+          <input type="password" id="auth-password" class="form-input" placeholder="••••••••••••" required>
+        </div>
+
+        <button type="submit" class="btn btn-primary" id="auth-submit-btn" style="width: 100%; margin-top: 8px;">
+          Sign in
+        </button>
+      </form>
+
+      <div style="margin-top: 14px; text-align: center; font-size: 0.78rem;">
+        <a href="#" id="auth-toggle-mode" style="color: var(--brand-primary-text); text-decoration: none; font-weight: 600;">Need an account? Sign up</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- ======================================================================
+       4. Toast Notification Container
+       ====================================================================== -->
+  <div class="toast-container" id="toast-container"></div>
+
+</div>
+
+<!-- Scripts (Untouched) -->
+<script src="app.js"></script>
+</body>
+</html>

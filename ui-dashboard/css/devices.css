@@ -1,0 +1,215 @@
+/* ==========================================================================
+   Project CIPHER - Network Detection & Response Console
+   Module: devices.css - Device Fleet Table, Threat Intelligence & Methodology
+   ========================================================================== */
+
+/* ==========================================================================
+   1. Device Fleet Table
+   ========================================================================== */
+.table-responsive {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.custom-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+}
+
+.custom-table th {
+  padding: 10px 12px;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  font-weight: 700;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-surface-subtle);
+}
+
+.custom-table td {
+  padding: 10px 12px;
+  font-size: 0.78rem;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-body);
+  vertical-align: middle;
+}
+
+.custom-table tr:hover td {
+  background: var(--bg-surface-hover);
+}
+
+.device-host-col {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.host-name {
+  font-weight: 600;
+  color: var(--text-highlight);
+}
+
+.host-vendor {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.mono-cell {
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+}
+
+.badge-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: capitalize;
+  font-family: var(--font-mono);
+}
+
+.badge-state.allowed {
+  background: var(--accent-emerald-light);
+  color: var(--accent-emerald-text);
+  border: 1px solid rgba(16, 185, 129, 0.25);
+}
+
+.badge-state.blocked {
+  background: var(--accent-crimson-light);
+  color: var(--accent-crimson-text);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+}
+
+.badge-state.suspicious {
+  background: var(--accent-amber-light);
+  color: var(--accent-amber-text);
+  border: 1px solid rgba(245, 158, 11, 0.25);
+}
+
+.table-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* ==========================================================================
+   2. Threat Intelligence Feeds
+   ========================================================================== */
+#threat-intel-ips,
+#threat-intel-domains {
+  list-style: none;
+  max-height: 280px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+#threat-intel-ips li,
+#threat-intel-domains li {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border-subtle);
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: background-color var(--transition-fast);
+}
+
+#threat-intel-ips li:hover,
+#threat-intel-domains li:hover {
+  background: var(--bg-surface-subtle);
+}
+
+/* ==========================================================================
+   3. Detection Methodology & Tier Specifications
+   ========================================================================== */
+.formula-box {
+  background: var(--bg-input);
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  color: var(--brand-primary-text);
+  margin-bottom: 12px;
+  border: 1px solid var(--border-color);
+  border-left: 3px solid var(--brand-primary);
+}
+
+.ai-feature-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 0.78rem;
+  color: var(--text-body);
+}
+
+.ai-feature-list li {
+  line-height: 1.45;
+}
+
+.ai-feature-list strong {
+  color: var(--text-main);
+}
+
+.schema-box {
+  background: var(--bg-input);
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  color: var(--accent-emerald-text);
+  border: 1px solid var(--border-color);
+  overflow-x: auto;
+  line-height: 1.45;
+}
+
+/* ==========================================================================
+   4. Architectural Pillars Reference Specification
+   ========================================================================== */
+.pillars-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+
+.pillar-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 14px 16px;
+}
+
+.pillar-number {
+  font-size: 0.65rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  letter-spacing: 0.5px;
+  font-family: var(--font-mono);
+}
+
+.pillar-title {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--text-highlight);
+  margin-top: 2px;
+}
+
+.pillar-desc {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-top: 4px;
+  line-height: 1.4;
+}
+
+@media (max-width: 900px) {
+  .pillars-grid {
+    grid-template-columns: 1fr;
+  }
+}
