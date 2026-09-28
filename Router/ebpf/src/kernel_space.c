@@ -168,7 +168,7 @@ static __always_inline int log_v6(__u8 *internal_mac, void *ip_addr,
                                   __u8 tcp_flags, __u8 flags) {
   struct flow_key key;
   __builtin_memset(&key, 0, sizeof(key));
-  __builtin_memcpy(key.external_ip, &ip_addr, 16);
+  __builtin_memcpy(key.external_ip, ip_addr, 16);
   __builtin_memcpy(key.internal_mac, internal_mac, 6);
   key.src_port = src_port;
   key.dst_port = dst_port;
@@ -520,7 +520,7 @@ int xdp_router_prog(struct xdp_md *ctx) {
     return XDP_PASS;
 
   struct MAC_address search_mac;
-  __builtin_memcpy(search_mac.addr, eth->h_source, 6);
+  __builtin_memcpy(search_mac.addr, internal_mac, 6);
   __u8 *is_banned = bpf_map_lookup_elem(&MAC_list, &search_mac);
   if (is_banned && *is_banned == 1)
     return XDP_DROP;

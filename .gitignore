@@ -1,1 +1,4 @@
 /target
+
+# Local runtime certificates, logs, and test artifacts
+.local/

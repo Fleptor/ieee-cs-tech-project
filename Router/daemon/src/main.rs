@@ -1,49 +1,60 @@
 use anyhow::Context;
 use aya::Ebpf;
-use aya::programs::{xdp::XdpMode, Xdp};
-use aya::maps::{RingBuf, Array, HashMap as BpfHashMap, BloomFilter};
-use tokio::signal;
-use std::mem;
-use std::ffi::CString;
-use std::sync::{Arc, Mutex};
-use tokio::time::{interval, Duration};
-use std::time;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use rustc_hash::{FxHashMap}; 
+use aya::maps::{Array, BloomFilter, HashMap as BpfHashMap, RingBuf};
+use aya::programs::{Xdp, xdp::XdpMode};
+use futures_util::{SinkExt, StreamExt};
 use hyperloglog::HyperLogLog;
-use futures_util::{StreamExt, SinkExt};
-use tokio_tungstenite::tungstenite::protocol::Message;
+use rustc_hash::FxHashMap;
+use std::ffi::CString;
+use std::mem;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::sync::{Arc, Mutex};
+use std::time;
+use tokio::signal;
 use tokio::sync::mpsc;
+use tokio::time::{Duration, interval};
+use tokio_tungstenite::tungstenite::protocol::Message;
 use tokio_util::sync::CancellationToken;
 
-
-#[allow(dead_code, unused_imports, clippy::all, mismatched_lifetime_syntaxes, elided_lifetimes_in_paths, unsafe_op_in_unsafe_fn)]
+#[allow(
+    dead_code,
+    unused_imports,
+    clippy::all,
+    mismatched_lifetime_syntaxes,
+    elided_lifetimes_in_paths,
+    unsafe_op_in_unsafe_fn
+)]
 #[path = "router_generated.rs"]
 mod router_generated;
 use router_generated::*;
 
 #[derive(Debug)]
 enum ExecutionCommand {
+    SetDeviceState {
+        mac: [u8; 6],
+        blocked: bool,
+        id: i64,
+    },
     BlockMac([u8; 6], String),
     AllowMac([u8; 6]),
     PromoteVip([u8; 28]),
     UpdateAdList(Vec<String>),
-    UpdateBannedIps(Vec<IpAddr>)
+    UpdateBannedIps(Vec<IpAddr>),
 }
 
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy)]
 pub struct LogEvent {
     pub external_ip: [u8; 16],
+    pub internal_mac: [u8; 6],
     pub payload_len: u16,
     pub src_port: u16,
     pub dst_port: u16,
-    pub internal_mac: [u8; 6],
     pub layer_4_protocol: u8,
     pub tcp_flags: u8,
     pub layer_3_protocol: u8,
     pub flags: u8,
-} 
+}
 
 struct DeviceTotals {
     bytes_in: u64,
@@ -65,7 +76,7 @@ impl Default for DeviceTotals {
         Self {
             bytes_in: 0,
             bytes_out: 0,
-            unique_external_ips: HyperLogLog::new(0.05), 
+            unique_external_ips: HyperLogLog::new(0.05),
             port_counts: FxHashMap::default(),
             syn_count: 0,
             rst_count: 0,
@@ -84,7 +95,7 @@ struct TcpSession {
     start_time: time::Instant,
     last_seen: time::Instant,
     bytes_transferred: u64,
-    is_vip: bool
+    is_vip: bool,
 }
 
 struct DeviceState {
@@ -112,6 +123,7 @@ struct ReportForDb {
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
+    dotenvy::dotenv().ok();
     println!("🛡️ Initializing Project_CIPHER Trust Score Engine...");
 
     let mut bpf = Ebpf::load_file("Router/ebpf/target/cipher_ebpf.o")
@@ -120,21 +132,29 @@ async fn main() -> Result<(), anyhow::Error> {
     println!("✅ eBPF ELF loaded successfully.");
 
     // INTERFACE MAPPING LOGIC
-    let test_iface = "enp7s0"; 
+    let interface = std::env::var("CIPHER_INTERFACE").unwrap_or_else(|_| "enp7s0".into());
+    let test_iface = interface.as_str();
     let c_iface = CString::new(test_iface).unwrap();
     let ifindex = unsafe { libc::if_nametoindex(c_iface.as_ptr()) };
-    println!("📡 Mapped interface '{}' to OS Index: {}", test_iface, ifindex);
+    anyhow::ensure!(ifindex != 0, "Interface does not exist: {}", test_iface);
+    println!(
+        "📡 Mapped interface '{}' to OS Index: {}",
+        test_iface, ifindex
+    );
 
     let mut iface_map: Array<_, u32> = Array::try_from(bpf.map_mut("Interface_Map").unwrap())?;
-    iface_map.set(0, ifindex, 0)?; 
+    iface_map.set(0, ifindex, 0)?;
     iface_map.set(1, ifindex, 0)?;
 
     let program: &mut Xdp = bpf.program_mut("xdp_router_prog").unwrap().try_into()?;
-    program.load().context("Failed to load XDP program into the kernel")?;
-    program.attach(test_iface, XdpMode::Skb)
+    program
+        .load()
+        .context("Failed to load XDP program into the kernel")?;
+    program
+        .attach(test_iface, XdpMode::Skb)
         .context(format!("Failed to attach XDP to {}", test_iface))?;
-    
-    // CREATE DATABASE 
+
+    // CREATE DATABASE
     let options = sqlx::sqlite::SqliteConnectOptions::new()
         .filename("router.db")
         .create_if_missing(true)
@@ -146,46 +166,62 @@ async fn main() -> Result<(), anyhow::Error> {
     sqlx::migrate!("./migrations").run(&db).await.unwrap();
 
     // CONNECT TO AXUM CLOUD
-    let network_id = "NET_123";
-    let cloud_url = format!("wss://localhost:3000/api/router/ws/{}", network_id);
+    let network_id = std::env::var("CIPHER_NETWORK_ID").unwrap_or_else(|_| "NET_123".into());
+    let cloud_url = format!(
+        "{}/api/router/ws/{}",
+        std::env::var("CIPHER_SERVER_URL").unwrap_or_else(|_| "wss://localhost:3000".into()),
+        network_id
+    );
     println!("🔌 Connecting to Axum Cloud at {}...", cloud_url);
-    
-    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-    
-    let mut request = cloud_url.into_client_request().expect("Invalid Cloud URL");
-    let router_secret = std::env::var("ROUTER_SECRET").unwrap_or_else(|_| "router_secret_key".to_string());
-    let auth_header_value = format!("ApiKey {}", router_secret);
-    
-    // Inject the authentication header so Axum's `RouterKey` extractor accepts us!
-    request.headers_mut().insert("Authorization", auth_header_value.parse().expect("Invalid Authorization Header Format"));
 
-    // NEW: BYPASS SELF-SIGNED CERTIFICATE VALIDATION
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+    let mut request = cloud_url.into_client_request().expect("Invalid Cloud URL");
+    let router_secret = std::env::var("ROUTER_SECRET").context("ROUTER_SECRET must be set")?;
+    let auth_header_value = format!("ApiKey {}", router_secret);
+
+    // Inject the authentication header so Axum's `RouterKey` extractor accepts us!
+    request.headers_mut().insert(
+        "Authorization",
+        auth_header_value
+            .parse()
+            .expect("Invalid Authorization Header Format"),
+    );
+
+    // Verify TLS using system trust or the explicitly configured local CA.
     use native_tls::TlsConnector;
     use tokio_tungstenite::Connector;
 
-    let native_tls_connector = TlsConnector::builder()
-        .danger_accept_invalid_certs(true)     // Ignore the self-signed nature
-        .danger_accept_invalid_hostnames(true) // Ignore localhost mismatch
-        .build()
-        .context("Failed to build custom TLS connector")?;
+    let mut tls_builder = TlsConnector::builder();
+    if let Ok(path) = std::env::var("CIPHER_CA_CERT") {
+        let pem = std::fs::read(path).context("Read CIPHER_CA_CERT")?;
+        tls_builder.add_root_certificate(native_tls::Certificate::from_pem(&pem)?);
+    }
+    let native_tls_connector = tls_builder.build().context("Build TLS connector")?;
 
     let connector = Connector::NativeTls(native_tls_connector.into());
 
-    // Connect using the custom, relaxed TLS configuration
-    let (ws_stream, _) = tokio_tungstenite::connect_async_tls_with_config(request, None, false, Some(connector))
-       .await.expect("Failed to connect to Axum Cloud! Is the server running?");
-    
+    // Connect using the verified TLS configuration
+    let (ws_stream, _) =
+        tokio_tungstenite::connect_async_tls_with_config(request, None, false, Some(connector))
+            .await
+            .context("Failed to connect to Axum Cloud")?;
+
+    let (outbound_tx, mut outbound_rx) = mpsc::channel::<String>(100);
+    let ack_tx = outbound_tx.clone();
     let (mut ws_sender, mut ws_receiver) = ws_stream.split();
     println!("🟢 WebSocket established! Secure tunnel active.");
 
     let cancel_token = CancellationToken::new();
 
     // THE GLOBAL AI MEMORY BANK
-    let telemetry_state: Arc<Mutex<FxHashMap<[u8; 6], DeviceState>>> = Arc::new(Mutex::new(FxHashMap::default()));
+    let telemetry_state: Arc<Mutex<FxHashMap<[u8; 6], DeviceState>>> =
+        Arc::new(Mutex::new(FxHashMap::default()));
 
-    let mut heartbeat_map: Array<_, u64> = Array::try_from(bpf.take_map("Heartbeat").expect("Heartbeat map not found"))
-        .context("Failed to map Heartbeat array")?;
-    
+    let mut heartbeat_map: Array<_, u64> =
+        Array::try_from(bpf.take_map("Heartbeat").expect("Heartbeat map not found"))
+            .context("Failed to map Heartbeat array")?;
+
     let ct_hb = cancel_token.clone();
     let handle_hb = tokio::spawn(async move {
         println!("🫀 Watchdog Thread Started...");
@@ -207,16 +243,29 @@ async fn main() -> Result<(), anyhow::Error> {
     });
 
     // THREAD 0: THE EXECUTIONER (eBPF Map Manager)
-    let mut mac_list: BpfHashMap<_, [u8; 6], u8> = BpfHashMap::try_from(bpf.take_map("MAC_list").expect("MAC_list map not found"))
-        .context("Failed to map MAC_list")?;
-    let mut vip_map: BpfHashMap<_, [u8; 28], u64> = BpfHashMap::try_from(bpf.take_map("fast_path_vip").expect("fast_path_vip map not found"))
-        .context("Failed to map fast_path_vip")?;
-    let mut ad_filter: BloomFilter<_, u32> = BloomFilter::try_from(bpf.take_map("Ad_Bloom_Filter").expect("Ad_Bloom_Filter map not found"))
-        .context("Failed to map Ad_Bloom_Filter")?;
-    let mut blocked_ipv4: BpfHashMap<_, u32, u32> = BpfHashMap::try_from(bpf.take_map("Blocked_IPV4s").expect("Blocked_IPV4s map not found"))
-        .context("Failed to map Blocked_IPV4s")?;
-    let mut blocked_ipv6: BpfHashMap<_, [u8; 16], u32> = BpfHashMap::try_from(bpf.take_map("Blocked_IPV6s").expect("Blocked_IPV6s map not found"))
-        .context("Failed to map Blocked_IPV6s")?;
+    let mut mac_list: BpfHashMap<_, [u8; 6], u8> =
+        BpfHashMap::try_from(bpf.take_map("MAC_list").expect("MAC_list map not found"))
+            .context("Failed to map MAC_list")?;
+    let mut vip_map: BpfHashMap<_, [u8; 28], u64> = BpfHashMap::try_from(
+        bpf.take_map("fast_path_vip")
+            .expect("fast_path_vip map not found"),
+    )
+    .context("Failed to map fast_path_vip")?;
+    let mut ad_filter: BloomFilter<_, u32> = BloomFilter::try_from(
+        bpf.take_map("Ad_Bloom_Filter")
+            .expect("Ad_Bloom_Filter map not found"),
+    )
+    .context("Failed to map Ad_Bloom_Filter")?;
+    let mut blocked_ipv4: BpfHashMap<_, u32, u32> = BpfHashMap::try_from(
+        bpf.take_map("Blocked_IPV4s")
+            .expect("Blocked_IPV4s map not found"),
+    )
+    .context("Failed to map Blocked_IPV4s")?;
+    let mut blocked_ipv6: BpfHashMap<_, [u8; 16], u32> = BpfHashMap::try_from(
+        bpf.take_map("Blocked_IPV6s")
+            .expect("Blocked_IPV6s map not found"),
+    )
+    .context("Failed to map Blocked_IPV6s")?;
 
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<ExecutionCommand>(100);
     let ct_0 = cancel_token.clone();
@@ -231,12 +280,25 @@ async fn main() -> Result<(), anyhow::Error> {
                 cmd = cmd_rx.recv() => {
                     if let Some(command) = cmd {
                         match command {
+                            ExecutionCommand::SetDeviceState { mac, blocked, id } => {
+                                let result = if blocked { mac_list.insert(mac, 1u8, 0) }
+                                    else { match mac_list.get(&mac, 0) {
+                                        Ok(_) => mac_list.remove(&mac),
+                                        Err(aya::maps::MapError::KeyNotFound) => Ok(()),
+                                        Err(e) => Err(e),
+                                    } };
+                                let ack = serde_json::json!({"type":"command_ack","id":id,"applied":result.is_ok(),"detail":result.err().map(|e| e.to_string()).unwrap_or_default()});
+                                let _ = ack_tx.send(ack.to_string()).await;
+                            }
+
                             ExecutionCommand::BlockMac(mac, reason) => {
                                 let mac_str = format!("{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
                                 if let Err(e) = mac_list.insert(mac, 1u8, 0) {
                                     println!("🔴 [eBPF ERROR] Failed to drop {}: {}", mac_str, e);
                                 } else {
                                     println!("💀 [EXECUTIONER] Device {} isolated at Layer 2. Reason: {}", mac_str, reason);
+                                    let event = serde_json::json!({"type":"edge_action","mac":mac_str,"state":"blocked","reason":reason});
+                                    let _ = ack_tx.send(event.to_string()).await;
                                 }
                             }
                             ExecutionCommand::AllowMac(mac) => {
@@ -302,7 +364,7 @@ async fn main() -> Result<(), anyhow::Error> {
     let telemetry_clone = Arc::clone(&telemetry_state);
     let cmd_tx_harvester = cmd_tx.clone();
     let ct_1 = cancel_token.clone();
-    
+
     let mut ring_buf = RingBuf::try_from(bpf.take_map("events").expect("Map not found"))
         .context("Failed to map the events RingBuffer")?;
 
@@ -316,12 +378,15 @@ async fn main() -> Result<(), anyhow::Error> {
             }
             let mut processed_in_batch = 0;
             {
-                let mut state= telemetry_clone.lock().unwrap();
+                let mut state = telemetry_clone.lock().unwrap();
                 let now = time::Instant::now();
                 while let Some(item) = ring_buf.next() {
+                    if item.len() != mem::size_of::<LogEvent>() {
+                        continue;
+                    }
                     let event = ptr_to_struct(&item);
 
-                    let external_ip = event.external_ip;                    
+                    let external_ip = event.external_ip;
                     let mac = event.internal_mac;
                     let l4_proto = event.layer_4_protocol;
                     let tcp_flags = event.tcp_flags;
@@ -335,10 +400,10 @@ async fn main() -> Result<(), anyhow::Error> {
                     let mut ban_reason = "";
 
                     // Get or create the master state for this device
-                    let device = state.entry(mac).or_insert_with(|| DeviceState{
+                    let device = state.entry(mac).or_insert_with(|| DeviceState {
                         totals: DeviceTotals::default(),
                         last_seen: now,
-                        active_tcp_sessions: FxHashMap::default()
+                        active_tcp_sessions: FxHashMap::default(),
                     });
 
                     // 1. AI Aggregation Math (Short-Term)
@@ -347,35 +412,61 @@ async fn main() -> Result<(), anyhow::Error> {
                     device.totals.unique_external_ips.insert(&external_ip);
                     *device.totals.port_counts.entry(dst_port).or_insert(0) += 1;
 
-                    if flags & 1 != 0 { device.totals.passed_connections += 1; }
-                    if flags & 2 != 0 { device.totals.bytes_in += payload as u64; }
-                    if flags & 4 != 0 { device.totals.bytes_out += payload as u64; }
+                    if flags & 1 != 0 {
+                        device.totals.passed_connections += 1;
+                    }
+                    if flags & 2 != 0 {
+                        device.totals.bytes_in += payload as u64;
+                    }
+                    if flags & 4 != 0 {
+                        device.totals.bytes_out += payload as u64;
+                    }
                     if flags & 8 != 0 {
-                        device.totals.anomaly_flags_count += 1; 
-                        if device.totals.anomaly_flags_count == 1{
+                        device.totals.anomaly_flags_count += 1;
+                        if device.totals.anomaly_flags_count == 1 {
                             let ip_string = if l3_proto == 4 {
                                 // Slice the first 4 bytes and convert to Ipv4Addr
-                                let v4_bytes: [u8; 4] = external_ip[0..4].try_into().unwrap_or([0; 4]);
+                                let v4_bytes: [u8; 4] =
+                                    external_ip[0..4].try_into().unwrap_or([0; 4]);
                                 IpAddr::V4(Ipv4Addr::from(v4_bytes)).to_string()
                             } else {
                                 // Use all 16 bytes for IPv6
                                 IpAddr::V6(Ipv6Addr::from(external_ip)).to_string()
                             };
-                            println!("[ANOMALY DROP] L4 Violation | Proto: {} | Payload: {} bytes from IP: {}", l4_proto, payload, ip_string);
+                            println!(
+                                "[ANOMALY DROP] L4 Violation | Proto: {} | Payload: {} bytes from IP: {}",
+                                l4_proto, payload, ip_string
+                            );
                         }
                     }
-                    if flags & 16 != 0 { device.totals.dropped_connections += 1; }
-                    if flags & 32 != 0 { device.totals.heuristic_flags_count += 1; }
+                    if flags & 1 == 0 {
+                        device.totals.dropped_connections += 1;
+                    }
+                    if flags & 32 != 0 {
+                        device.totals.heuristic_flags_count += 1;
+                    }
                     if flags & 64 != 0 {
                         device.totals.infra_alert_count += 1;
-                        let mac_str = format!("{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-                        println!("[CRITICAL] Rogue Infrastructure Hijack Attempted by {}!", mac_str);
+                        let mac_str = format!(
+                            "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+                            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+                        );
+                        println!(
+                            "[CRITICAL] Rogue Infrastructure Hijack Attempted by {}!",
+                            mac_str
+                        );
                         should_ban = true;
                         ban_reason = "Infrastructure Hijack (Rogue DHCP)";
                     }
                     if flags & 128 != 0 {
-                        let mac_str = format!("{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-                        println!("🚫 [SINKHOLE] {} attempted to query a blocked domain (DNS request annihilated).", mac_str);
+                        let mac_str = format!(
+                            "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+                            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+                        );
+                        println!(
+                            "🚫 [SINKHOLE] {} attempted to query a blocked domain (DNS request annihilated).",
+                            mac_str
+                        );
                     }
                     if device.totals.anomaly_flags_count > 500 {
                         should_ban = true;
@@ -386,29 +477,46 @@ async fn main() -> Result<(), anyhow::Error> {
                         if (tcp_flags & 0x02) != 0 {
                             device.totals.syn_count += 1;
                         }
-                        if (tcp_flags & 0x04) != 0{
+                        if (tcp_flags & 0x04) != 0 {
                             device.totals.rst_count += 1;
                         }
 
                         // PILLAR 4: SYN/RST Anomaly Detection (Port Scans / Lateral Movement)
                         if device.totals.syn_count > 50 {
-                            let anomaly_ratio = (device.totals.rst_count as f64) / (device.totals.syn_count as f64 + 1.0);
+                            let anomaly_ratio = (device.totals.rst_count as f64)
+                                / (device.totals.syn_count as f64 + 1.0);
                             if anomaly_ratio > 0.6 {
-                                let mac_str = format!("{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-                                println!("🚨 [PILLAR 4] TCP Scan detected from {}! (RST/SYN Ratio: {:.2})", mac_str, anomaly_ratio);
+                                let mac_str = format!(
+                                    "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+                                    mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+                                );
+                                println!(
+                                    "🚨 [PILLAR 4] TCP Scan detected from {}! (RST/SYN Ratio: {:.2})",
+                                    mac_str, anomaly_ratio
+                                );
                                 should_ban = true;
-                                ban_reason = "TCP Session Health: Scanner Detected (High RST Ratio)";
+                                ban_reason =
+                                    "TCP Session Health: Scanner Detected (High RST Ratio)";
                             }
                         }
 
                         // PILLAR 6: Session Longevity
                         let session_key = (external_ip, src_port, dst_port);
-                        let session = device.active_tcp_sessions.entry(session_key)
-                            .or_insert_with(|| TcpSession {start_time: now, last_seen: now, bytes_transferred: 0, is_vip: false});
+                        let session = device
+                            .active_tcp_sessions
+                            .entry(session_key)
+                            .or_insert_with(|| TcpSession {
+                                start_time: now,
+                                last_seen: now,
+                                bytes_transferred: 0,
+                                is_vip: false,
+                            });
                         session.last_seen = now;
                         session.bytes_transferred += payload as u64;
 
-                        if session.bytes_transferred > 50_000_000 && device.totals.anomaly_flags_count == 0 {
+                        if session.bytes_transferred > 50_000_000
+                            && device.totals.anomaly_flags_count == 0
+                        {
                             if !session.is_vip {
                                 let mut key_bytes = [0u8; 28];
                                 key_bytes[0..16].copy_from_slice(&external_ip);
@@ -416,22 +524,25 @@ async fn main() -> Result<(), anyhow::Error> {
                                 key_bytes[22..24].copy_from_slice(&src_port.to_ne_bytes());
                                 key_bytes[24..26].copy_from_slice(&dst_port.to_ne_bytes());
                                 key_bytes[26] = l4_proto;
-                                
-                                let _ = cmd_tx_harvester.try_send(ExecutionCommand::PromoteVip(key_bytes));
+
+                                let _ = cmd_tx_harvester
+                                    .try_send(ExecutionCommand::PromoteVip(key_bytes));
                                 session.is_vip = true;
                             }
                         }
                     }
                     if should_ban {
-                        let _ = cmd_tx_harvester.try_send(ExecutionCommand::BlockMac(mac, ban_reason.to_string()));
+                        let _ = cmd_tx_harvester
+                            .try_send(ExecutionCommand::BlockMac(mac, ban_reason.to_string()));
                     }
                     processed_in_batch += 1;
-                    if processed_in_batch >= 100 { break; } 
+                    if processed_in_batch >= 100 {
+                        break;
+                    }
                 }
 
                 // PILLAR 6 GARBAGE COLLECTOR (Runs every 10 seconds)
                 if last_gc.elapsed().as_secs() >= 10 {
-                    
                     let mut mac_to_remove = Vec::new();
                     for (mac_key, device) in state.iter_mut() {
                         if now.duration_since(device.last_seen) > time::Duration::from_secs(86400) {
@@ -445,7 +556,9 @@ async fn main() -> Result<(), anyhow::Error> {
                             let idle_time = now.duration_since(session.last_seen).as_secs();
 
                             // Edge Case Mitigation: Skip Persistent SSH sessions (Port 22)
-                            if key.1 == 22 || key.2 == 22 { return true; }
+                            if key.1 == 22 || key.2 == 22 {
+                                return true;
+                            }
 
                             // The State Exhaustion Trigger (5 mins = 300s)
                             if uptime > 300 {
@@ -456,16 +569,32 @@ async fn main() -> Result<(), anyhow::Error> {
                                 }
                             }
                             // Silent Memory Safety: Drop dead connections idle for > 5 mins
-                            if idle_time > 300 { return false; }
+                            if idle_time > 300 {
+                                return false;
+                            }
                             true // Keep session alive
                         });
                         if slowloris_detected {
-                            let mac_str = format!("{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}", mac_key[0], mac_key[1], mac_key[2], mac_key[3], mac_key[4], mac_key[5]);
-                            println!("🐢 [SLOWLORIS DETECTED] Device {} is exhausting state (Throughput < 100 B/s for > 5 mins)!", mac_str);
-                            let _ = cmd_tx_harvester.try_send(ExecutionCommand::BlockMac(*mac_key, "State Exhaustion (Slowloris)".to_string()));
+                            let mac_str = format!(
+                                "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+                                mac_key[0],
+                                mac_key[1],
+                                mac_key[2],
+                                mac_key[3],
+                                mac_key[4],
+                                mac_key[5]
+                            );
+                            println!(
+                                "🐢 [SLOWLORIS DETECTED] Device {} is exhausting state (Throughput < 100 B/s for > 5 mins)!",
+                                mac_str
+                            );
+                            let _ = cmd_tx_harvester.try_send(ExecutionCommand::BlockMac(
+                                *mac_key,
+                                "State Exhaustion (Slowloris)".to_string(),
+                            ));
                         }
                     }
-                    for mac_key in mac_to_remove{
+                    for mac_key in mac_to_remove {
                         state.remove(&mac_key);
                     }
                     last_gc = now;
@@ -474,9 +603,9 @@ async fn main() -> Result<(), anyhow::Error> {
 
             // Yield control back to Tokio
             if processed_in_batch == 0 {
-                tokio::time::sleep(Duration::from_millis(1)).await; 
+                tokio::time::sleep(Duration::from_millis(1)).await;
             } else {
-                tokio::task::yield_now().await; 
+                tokio::task::yield_now().await;
             }
         }
     });
@@ -484,16 +613,24 @@ async fn main() -> Result<(), anyhow::Error> {
     let telemetry_reporter_clone = Arc::clone(&telemetry_state);
     let db_vault = db.clone();
     let ct_2 = cancel_token.clone();
+    let sensor_interface = interface.clone();
     let handle_2 = tokio::spawn(async move {
         let mut ticker = interval(Duration::from_secs(10));
         let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
         loop {
             tokio::select! {
+                Some(message) = outbound_rx.recv() => {
+                    if ws_sender.send(Message::Text(message.into())).await.is_err() { ct_2.cancel(); break; }
+                }
+
                 _ = ct_2.cancelled() => {
                     println!("🛑 Cloud Reporter Thread spinning down...");
                     break;
                 }
                 _ = ticker.tick() => {
+                    let heartbeat = serde_json::json!({"type":"heartbeat","interface":sensor_interface,"xdp_attached":true});
+                    if ws_sender.send(Message::Text(heartbeat.to_string().into())).await.is_err() { ct_2.cancel(); break; }
+
                     let mut reports_to_send;
                     {
                         let mut state = telemetry_reporter_clone.lock().unwrap();
@@ -510,7 +647,7 @@ async fn main() -> Result<(), anyhow::Error> {
                             builder.reset();
                             let mac_string = format!("{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
                             let mac_fb = builder.create_string(&mac_string);
-                            let net_id_fb = builder.create_string(network_id);
+                            let net_id_fb = builder.create_string(&network_id);
                             let ip_count = totals.unique_external_ips.len().round() as u32;
 
                             let mut port_entropy: f32 = 0.0;
@@ -537,7 +674,7 @@ async fn main() -> Result<(), anyhow::Error> {
                             tel_builder.add_anomaly_flags_count(totals.anomaly_flags_count);
                             tel_builder.add_heuristic_flags_count(totals.heuristic_flags_count);
                             tel_builder.add_infra_alert_count(totals.infra_alert_count);
-                            tel_builder.add_port_entropy_score(port_entropy); 
+                            tel_builder.add_port_entropy_score(port_entropy);
 
                             let tel_offset = tel_builder.finish();
                             let mut msg_builder = RouterMessageBuilder::new(&mut builder);
@@ -550,7 +687,7 @@ async fn main() -> Result<(), anyhow::Error> {
                                 println!("🔴 [WS ERROR] Failed to beam telemetry to cloud. Vaulting to SQLite...");
                                 let _ = sqlx::query("INSERT OR REPLACE INTO reports (network_id, mac, bytes_in, bytes_out, unique_external_ips, total_connections, passed_connections, dropped_connections, anomaly_flags_count, heuristic_flags_count, infra_alert_count, port_entropy)
                                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-                                    .bind(network_id)
+                                    .bind(&network_id)
                                     .bind(mac_string)
                                     .bind(totals.bytes_in as i64)
                                     .bind(totals.bytes_out as i64)
@@ -563,7 +700,7 @@ async fn main() -> Result<(), anyhow::Error> {
                                     .bind(totals.infra_alert_count as i64)
                                     .bind(port_entropy as f64)
                                     .execute(&db_vault).await;
-                            } 
+                            }
                             else {
                                 if let Ok(backlog) = sqlx::query_as::<_, ReportForDb>("SELECT * FROM reports").fetch_all(&db_vault).await {
                                     if !backlog.is_empty() {
@@ -586,7 +723,7 @@ async fn main() -> Result<(), anyhow::Error> {
                                             b_tel.add_anomaly_flags_count(report.anomaly_flags_count as u32);
                                             b_tel.add_heuristic_flags_count(report.heuristic_flags_count as u32);
                                             b_tel.add_infra_alert_count(report.infra_alert_count as u32);
-                                            b_tel.add_port_entropy_score(report.port_entropy as f32); 
+                                            b_tel.add_port_entropy_score(report.port_entropy as f32);
 
                                             let b_tel_offset = b_tel.finish();
                                             let mut b_msg = RouterMessageBuilder::new(&mut builder);
@@ -625,8 +762,23 @@ async fn main() -> Result<(), anyhow::Error> {
                     break;
                 }
                 msg_opt = ws_receiver.next() => {
-                    let Some(msg) = msg_opt else { break; }; // Break if socket closes
-                    if let Ok(Message::Binary(bytes)) = msg {
+                    let Some(Ok(msg)) = msg_opt else { ct_3.cancel(); break; };
+                    if let Message::Text(text) = &msg {
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(text) {
+                            if v["type"] == "device_command" {
+                                let parts: Option<Vec<u8>> = v["mac"].as_str().unwrap_or("").split(':').map(|p| u8::from_str_radix(p,16).ok()).collect();
+                                if let (Some(parts),Some(id),Some(desired)) = (parts,v["id"].as_i64(),v["state"].as_str()) {
+                                    if let Ok(mac) = <[u8;6]>::try_from(parts) {
+                                        if desired == "blocked" || desired == "allowed" {
+                                            let _ = cmd_tx_cloud.send(ExecutionCommand::SetDeviceState {mac, blocked:desired == "blocked", id}).await;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if matches!(msg, Message::Close(_)) { ct_3.cancel(); break; } // Break if socket closes
+                    if let Message::Binary(bytes) = msg {
                         if let Ok(response) = flatbuffers::root::<RouterResponse>(&bytes) {
                             if let Some(status) = response.status() {
                                 // NEW: THREAT INTEL EXTRACTION
@@ -651,7 +803,7 @@ async fn main() -> Result<(), anyhow::Error> {
                                             let _ = cmd_tx_cloud.send(ExecutionCommand::UpdateBannedIps(ips)).await;
                                         }
                                     }
-                                } 
+                                }
                                 // EXISTING: INDIVIDUAL MAC COMMANDS
                                 else if let Some(mac_str) = response.mac() {
                                     println!("☁️ [CLOUD COMMAND] Received {} for MAC: {}", status, mac_str);
@@ -678,6 +830,7 @@ async fn main() -> Result<(), anyhow::Error> {
         }
     });
     tokio::select! {
+        _ = cancel_token.cancelled() => {},
         _ = signal::ctrl_c() => {
             println!("\n🛑 Graceful Shutdown Initiated! Alerting threads...");
             cancel_token.cancel();
@@ -689,6 +842,10 @@ async fn main() -> Result<(), anyhow::Error> {
 }
 
 fn ptr_to_struct(bytes: &[u8]) -> LogEvent {
+    assert!(
+        bytes.len() >= mem::size_of::<LogEvent>(),
+        "Truncated kernel event"
+    );
     unsafe {
         let mut event: LogEvent = mem::zeroed();
         std::ptr::copy_nonoverlapping(
@@ -697,5 +854,23 @@ fn ptr_to_struct(bytes: &[u8]) -> LogEvent {
             mem::size_of::<LogEvent>(),
         );
         event
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn kernel_event_layout_matches_c_producer() {
+        assert_eq!(mem::size_of::<LogEvent>(), 32);
+        let bytes: [u8; 32] = [
+            1, 2, 3, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
+            0x34, 0x12, 0x50, 0, 0xbb, 1, 6, 2, 4, 5,
+        ];
+        let event = ptr_to_struct(&bytes);
+        assert_eq!(event.internal_mac, [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff]);
+        let (len, src, dst) = (event.payload_len, event.src_port, event.dst_port);
+        assert_eq!((len, src, dst), (0x1234, 80, 443));
+        assert_eq!(event.flags, 5);
     }
 }

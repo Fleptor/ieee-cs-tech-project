@@ -3,7 +3,7 @@ use jsonwebtoken::errors::Error;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::sync::Arc;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{RwLock, broadcast};
 
 type SharedDatabase = sqlx::SqlitePool;
 
@@ -79,6 +79,7 @@ pub struct DeviceCommand {
 
 #[derive(Clone)]
 pub struct AppState {
+    pub sensors: Arc<RwLock<std::collections::HashMap<String, SensorStatus>>>,
     pub db: sqlx::SqlitePool,
     pub tx: broadcast::Sender<DeviceCommand>,
     pub threat_intel: Arc<RwLock<crate::ai::GlobalThreatIntel>>,
@@ -154,4 +155,11 @@ impl axum::response::IntoResponse for AppError {
             }
         }
     }
+}
+
+#[derive(Clone, serde::Serialize)]
+pub struct SensorStatus {
+    pub last_heartbeat: i64,
+    pub interface: String,
+    pub xdp_attached: bool,
 }

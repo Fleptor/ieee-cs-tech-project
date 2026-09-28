@@ -1,559 +1,433 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Project CIPHER - Network Detection & Response Console</title>
-  
-  <!-- Fonts -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-  
-  <!-- Modular Console Stylesheets -->
-  <link rel="stylesheet" href="css/base.css">
-  <link rel="stylesheet" href="css/layout.css">
-  <link rel="stylesheet" href="css/components.css">
-  <link rel="stylesheet" href="css/overview.css">
-  <link rel="stylesheet" href="css/devices.css">
-</head>
-<body>
-
-<div id="app">
-
-  <!-- ======================================================================
-       1. Single Operator Sidebar
-       ====================================================================== -->
-  <aside class="sidebar">
-    <div class="brand-header">
-      <div class="sidebar-brand-title">
-        <div class="sidebar-brand-icon">C</div>
-        <span class="sidebar-main-title">CIPHER NDR</span>
-        <span class="sidebar-title-badge">Sensor Active</span>
-      </div>
-      <button class="btn btn-secondary btn-sm" onclick="fetchDevices()" title="Refresh hardware list">Sync</button>
-    </div>
-
-    <!-- Active Network Context Selector -->
-    <div class="sidebar-network-wrap">
-      <label for="network-select" class="sidebar-network-label">Active Network</label>
-      <select id="network-select" class="network-select">
-        <option value="network-alpha-01">network-alpha-01 (Primary)</option>
-        <option value="corporate-dmz-02">corporate-dmz-02 (Datacenter)</option>
-        <option value="edge-router-soho">edge-router-soho (Branch)</option>
-      </select>
-    </div>
-
-    <!-- Active Signals Summary -->
-    <div class="sidebar-signals-card">
-      <div class="signals-header">
-        <span>Active signals</span>
-        <span class="status-dot active" title="Sensor online"></span>
-      </div>
-      <div class="signals-grid">
-        <div class="signal-tile critical" title="Critical incidents requiring block">
-          <span class="signal-val crimson" id="sig-critical-count">—</span>
-          <span class="signal-label">Critical</span>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#0c131c" />
+    <title>CIPHER · Network operations</title>
+    <link rel="icon" href="assets/cipher-logo.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="styles.css" />
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+    <div class="shell">
+      <aside id="sidebar">
+        <button
+          id="sidebar-close"
+          class="icon-button"
+          aria-label="Close navigation"
+        >
+          ×
+        </button>
+        <a href="#overview" class="brand" aria-label="CIPHER overview"
+          ><span class="brand-mark">C<span>⌁</span></span
+          ><span>CIPHER<small>NETWORK DEFENSE</small></span></a
+        >
+        <div class="network-picker">
+          <label for="network">WORKSPACE</label
+          ><select id="network" disabled>
+            <option>Sign in to select a network</option>
+          </select>
         </div>
-        <div class="signal-tile warning" title="Statistical anomalies flagged">
-          <span class="signal-val amber" id="sig-warning-count">—</span>
-          <span class="signal-label">Flagged</span>
-        </div>
-        <div class="signal-tile quarantine" title="Devices blocked in eBPF map">
-          <span class="signal-val crimson" id="sig-blocked-count">—</span>
-          <span class="signal-label">Isolated</span>
-        </div>
-      </div>
-    </div>
-
-    <!-- Primary Navigation Menu -->
-    <ul class="nav-menu">
-      <li>
-        <a class="nav-item active" data-tab="overview" href="#overview">
-          <span>Overview</span>
-        </a>
-      </li>
-      <li>
-        <a class="nav-item" data-tab="ai-telemetry" href="#ai-telemetry">
-          <span>Incidents</span>
-        </a>
-      </li>
-      <li>
-        <a class="nav-item" data-tab="devices" href="#devices">
-          <span>Device fleet</span>
-          <span class="nav-badge" id="nav-device-count">—</span>
-        </a>
-      </li>
-      <li>
-        <a class="nav-item" data-tab="threat-intel" href="#threat-intel">
-          <span>Threat intelligence</span>
-        </a>
-      </li>
-    </ul>
-
-    <!-- Secondary Architecture Documentation Link -->
-    <div class="sidebar-secondary-links">
-      <a class="nav-item secondary-nav-link" data-tab="pillars" href="#pillars" title="Architecture documentation">
-        <span>Architecture docs</span>
-      </a>
-    </div>
-
-    <!-- Subsystem Status Monitor - Exact 3 Status Dots in Order -->
-    <div class="subsystem-monitor">
-      <div class="subsystem-title">
-        <span>System health</span>
-        <span class="status-dot active"></span>
-      </div>
-      <div class="subsystem-list">
-        <div class="subsystem-item">
-          <span>Data Plane (XDP)</span>
-          <span class="status-dot active" title="NIC driver polling active"></span>
-        </div>
-        <div class="subsystem-item">
-          <span>Edge Daemon (Rust)</span>
-          <span class="status-dot active" title="Rust edge daemon active"></span>
-        </div>
-        <div class="subsystem-item">
-          <span>Cloud Tunnel (Axum)</span>
-          <span class="status-dot active" title="FlatBuffers WebSocket stream"></span>
-        </div>
-        <div class="subsystem-item">
-          <span>Watchdog failsafe</span>
-          <span id="watchdog-timer" style="font-family: var(--font-mono); color: var(--brand-primary-text); font-weight: 700;">5s</span>
-        </div>
-      </div>
-    </div>
-
-    <!-- User Profile & Auth Panel -->
-    <div class="user-panel">
-      <div class="user-info">
-        <span class="user-name" id="display-username">Guest Operator</span>
-        <span class="user-role" id="display-user-role">Read-Only Sandbox</span>
-      </div>
-      <div>
-        <button class="btn btn-secondary btn-sm" id="btn-open-auth">Sign in</button>
-        <button class="btn btn-secondary btn-sm" id="btn-logout" style="display: none;">Logout</button>
-      </div>
-    </div>
-  </aside>
-
-  <!-- ======================================================================
-       2. Main Workspace Area
-       ====================================================================== -->
-  <main class="main-wrapper">
-
-    <!-- Topbar -->
-    <header class="topbar">
-      <div class="topbar-left">
-        <button class="btn btn-icon" id="menu-toggle" style="display: none;" aria-label="Toggle Menu">☰</button>
-      </div>
-
-      <div class="topbar-right">
-        <div class="live-pill">
-          <span class="status-dot active"></span>
-          <span>FlatBuffers telemetry stream</span>
-        </div>
-        <button class="btn btn-primary btn-sm" onclick="fetchDevices()">Sync hardware</button>
-      </div>
-    </header>
-
-    <!-- Page Content Views -->
-    <div class="page-content">
-
-      <!-- ==================== VIEW 1: OVERVIEW ==================== -->
-      <section id="view-overview" class="view-section active">
-        
-        <!-- Section Header -->
-        <div class="section-header">
-          <div class="section-title-wrap">
-            <h2>Overview</h2>
-            <p>XDP data plane monitoring and telemetry</p>
-          </div>
-          <div>
-            <span class="live-pill" id="watchdog-status-text">Protected (eBPF XDP)</span>
-          </div>
-        </div>
-
-        <!-- 1. KPI Metrics Summary Strip (Truthful Unconnected State) -->
-        <div class="kpi-grid">
-          <div class="kpi-card">
-            <div class="kpi-top">
-              <span class="kpi-label">Active hardware</span>
-              <span class="kpi-tag">RAM</span>
-            </div>
-            <div class="kpi-value" id="kpi-active-devices">—</div>
-            <div class="kpi-subtext">RAM tracking</div>
-          </div>
-
-          <div class="kpi-card">
-            <div class="kpi-top">
-              <span class="kpi-label">Packets evaluated</span>
-              <span class="kpi-tag">TOTAL</span>
-            </div>
-            <div class="kpi-value" id="kpi-total-packets">—</div>
-            <div class="kpi-subtext">Total evaluated</div>
-          </div>
-
-          <div class="kpi-card">
-            <div class="kpi-top">
-              <span class="kpi-label">Hardware drops</span>
-              <span class="kpi-tag">XDP</span>
-            </div>
-            <div class="kpi-value" id="kpi-dropped-packets" style="color: var(--accent-crimson-text);">—</div>
-            <div class="kpi-subtext warning">eBPF drop counter</div>
-          </div>
-
-          <div class="kpi-card">
-            <div class="kpi-top">
-              <span class="kpi-label">Elephant fast-path</span>
-              <span class="kpi-tag">LRU</span>
-            </div>
-            <div class="kpi-value" id="kpi-elephant-bypass">—</div>
-            <div class="kpi-subtext">Statistical sampling</div>
-          </div>
-        </div>
-
-        <!-- 2. Incidents Stream (Top Priority) -->
-        <div class="card incident-stream-card">
-          <div class="card-header">
-            <h3 class="card-title">
-              <span>Incidents</span>
-              <span class="badge">Layer 2 supervisor decision feed</span>
-            </h3>
-            <span class="live-pill" style="font-size: 0.7rem;">Active monitoring</span>
-          </div>
-          <div class="audit-stream" id="audit-stream-container">
-            <!-- Populated dynamically by app.js -->
-          </div>
-        </div>
-
-        <!-- 3. Split Section: Traffic Trend & Fleet Risk -->
-        <div class="dashboard-split">
-          
-          <!-- Left: Real-Time Traffic Stream & Segmented Metric Bar -->
-          <div class="card">
-            <div class="card-header">
-              <h3 class="card-title">
-                <span>Traffic</span>
-                <span class="badge">FlatBuffers pipeline</span>
-              </h3>
-              <div style="display: flex; gap: 12px; font-size: 0.74rem; font-family: var(--font-mono);">
-                <span style="color: var(--accent-cyan-text); font-weight: 600;">● Inbound</span>
-                <span style="color: var(--accent-indigo-text); font-weight: 600;">● Outbound</span>
-              </div>
-            </div>
-
-            <div class="telemetry-chart-wrap">
-              <canvas id="telemetry-chart"></canvas>
-            </div>
-
-            <!-- Segmented Metric Bar -->
-            <div class="metric-strip-segmented">
-              <div class="metric-strip-col">
-                <span class="metric-strip-label">Tier 1 Z-score</span>
-                <div class="metric-tile-val" id="metric-zscore" style="color: var(--accent-cyan-text);">—</div>
-                <span class="metric-strip-sub">Threshold: 3.0</span>
-              </div>
-
-              <div class="metric-strip-col">
-                <span class="metric-strip-label">Port entropy</span>
-                <div class="metric-tile-val" id="metric-entropy">—</div>
-                <span class="metric-strip-sub">Range: 0.0 – 4.0</span>
-              </div>
-
-              <div class="metric-strip-col">
-                <span class="metric-strip-label">Exfiltration ratio</span>
-                <div class="metric-tile-val" id="metric-exfil" style="color: var(--accent-emerald-text);">—</div>
-                <span class="metric-strip-sub">Out / In bytes</span>
-              </div>
+        <p class="nav-label">MONITOR</p>
+        <nav aria-label="Main navigation">
+          <a href="#overview" data-view="overview" class="selected"
+            ><span class="nav-icon">◫</span> Overview</a
+          >
+          <a href="#devices" data-view="devices"
+            ><span class="nav-icon">▦</span> Devices
+            <span id="nav-count" class="count">—</span></a
+          >
+          <a href="#incidents" data-view="incidents"
+            ><span class="nav-icon">◇</span> Incidents</a
+          >
+          <a href="#intelligence" data-view="intelligence"
+            ><span class="nav-icon">◎</span> Threat intelligence</a
+          >
+          <a href="#engine" data-view="engine"
+            ><span class="nav-icon">⌘</span> Engine health</a
+          >
+        </nav>
+        <div class="sidebar-bottom">
+          <div class="edge-mini">
+            <span class="dot" id="edge-dot"></span>
+            <div id="edge-summary">
+              Awaiting connection<small>Live engine status</small>
             </div>
           </div>
-
-          <!-- Right: Fleet Risk Truthful Empty/Loading State -->
-          <div class="card" style="display: flex; flex-direction: column; justify-content: space-between;">
+          <div class="profile">
+            <span class="avatar" id="avatar">C</span>
             <div>
-              <div class="card-header">
-                <h3 class="card-title">
-                  <span>Fleet risk</span>
-                  <span class="badge">Device anomaly ranking</span>
-                </h3>
-              </div>
-
-              <div class="empty-state-notice">
-                <p class="empty-state-text">Risk ranking becomes available after device telemetry is received.</p>
-              </div>
+              <strong id="username">Operator console</strong
+              ><small id="role">Not signed in</small>
             </div>
-
-            <button class="btn btn-secondary btn-full" style="margin-top: 12px;" onclick="document.querySelector('.nav-item[data-tab=devices]').click()">
-              View device fleet
+            <button
+              id="logout"
+              class="icon-button"
+              title="Sign out"
+              aria-label="Sign out"
+              hidden
+            >
+              ↗
             </button>
           </div>
-
         </div>
-
-        <!-- 4. Diagnostic Bitmask Flag Decoder -->
-        <div class="card">
-          <div class="card-header">
-            <h3 class="card-title">
-              <span>Diagnostic flag decoder</span>
-              <span class="badge" id="bitmask-raw-value">0x07 (7)</span>
-            </h3>
-            <span style="font-family: var(--font-mono); font-size: 0.78rem; color: var(--brand-primary-text); font-weight: 600;">
-              Binary mask: <strong id="bitmask-binary-value">00000111</strong>
-            </span>
+      </aside>
+      <div class="workspace">
+        <header>
+          <div class="breadcrumb">
+            <button
+              id="menu"
+              class="icon-button"
+              aria-label="Toggle navigation"
+              aria-expanded="false"
+            >
+              ☰</button
+            ><span>Workspace</span><span>/</span
+            ><strong id="breadcrumb">Overview</strong>
           </div>
-          <p style="font-size: 0.76rem; color: var(--text-muted); margin-bottom: 2px;">
-            Diagnostic flag decoder. Toggle bits locally to inspect combinations.
-          </p>
-          <div class="bitmask-container" id="bitmask-grid">
-            <!-- Dynamically populated by app.js -->
+          <div class="header-actions">
+            <span id="connection" class="connection"
+              ><i class="dot"></i> Not connected</span
+            ><button id="auth-open" class="button small">
+              Sign in <span>↗</span>
+            </button>
           </div>
-        </div>
-      </section>
-
-      <!-- ==================== VIEW 2: DEVICE FLEET ==================== -->
-      <section id="view-devices" class="view-section">
-        <div class="section-header">
-          <div class="section-title-wrap">
-            <h2>Devices and enforcement</h2>
-            <p>Hardware inventory and eBPF MAC map enforcement</p>
-          </div>
-          <div>
-            <button class="btn btn-secondary btn-sm" onclick="fetchDevices()">Refresh devices</button>
-          </div>
-        </div>
-
-        <div class="card">
-          <div class="table-responsive">
-            <table class="custom-table">
-              <thead>
-                <tr>
-                  <th>Device / Manufacturer</th>
-                  <th>IP Address</th>
-                  <th>MAC Address</th>
-                  <th>Security State</th>
-                  <th>Last Seen</th>
-                  <th>Hardware Actions</th>
-                </tr>
-              </thead>
-              <tbody id="devices-table-body">
-                <!-- Dynamically populated by app.js -->
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </section>
-
-      <!-- ==================== VIEW 3: INCIDENTS & DETECTION METHODOLOGY ==================== -->
-      <section id="view-ai-telemetry" class="view-section">
-        <div class="section-header">
-          <div class="section-title-wrap">
-            <h2>Detection methodology</h2>
-            <p>Tier 1 statistical baseline and Tier 2 cognitive supervisor specifications</p>
-          </div>
-          <div>
-            <button class="btn btn-secondary btn-sm" onclick="document.querySelector('.nav-item[data-tab=overview]').click()">View live overview</button>
-          </div>
-        </div>
-
-        <div class="dashboard-split">
-          <div class="card">
-            <div class="card-header">
-              <h3 class="card-title">Tier 1: Mathematical Z-score profiler</h3>
-              <span class="badge">&lt; 3 &mu;s execution</span>
+        </header>
+        <main id="main" tabindex="-1">
+          <div class="page-heading">
+            <div>
+              <div class="eyebrow">CIPHER CONTROL PLANE</div>
+              <h1 id="page-title">Network overview</h1>
+              <p id="page-description">
+                A clear view of your network. Every signal grounded in live
+                telemetry.
+              </p>
             </div>
-            <p style="font-size: 0.8rem; color: var(--text-muted); line-height: 1.5; margin-bottom: 12px;">
-              Executes in the Rust edge daemon using <code>ndarray</code>. Maintains a 50-sample baseline memory buffer to compute Mean (&mu;) and Standard Deviation (&sigma;) across security dimensions:
+            <button id="refresh" class="button secondary" disabled>
+              <span>↻</span> Refresh
+            </button>
+          </div>
+          <div id="notice" class="notice" role="status">
+            <span class="notice-symbol">◎</span>
+            <div>
+              <strong>Connect to your network</strong>
+              <p>
+                Sign in to see your devices, traffic, and security activity. New
+                installation? Create the first operator account to connect your
+                configured network.
+              </p>
+            </div>
+            <button class="text-button" id="notice-auth">Get started ↗</button>
+          </div>
+          <section id="view-overview" class="view">
+            <div class="metrics">
+              <article class="metric">
+                <div>Observed devices <span>▦</span></div>
+                <strong id="metric-devices">—</strong
+                ><small id="metric-active">Discovered by the edge sensor</small>
+              </article>
+              <article class="metric">
+                <div>Observed traffic <span>↗</span></div>
+                <strong id="metric-traffic">—</strong
+                ><small>Reported payload · last hour</small>
+              </article>
+              <article class="metric">
+                <div>Dropped observations <span>⊘</span></div>
+                <strong id="metric-drops">—</strong
+                ><small>Reported drops · last hour</small>
+              </article>
+              <article class="metric">
+                <div>Blocked devices <span>◇</span></div>
+                <strong id="metric-blocked">—</strong
+                ><small>Last acknowledged device state</small>
+              </article>
+            </div>
+            <div class="overview-grid">
+              <article class="panel traffic-panel">
+                <div class="panel-heading">
+                  <div>
+                    <h2>Traffic activity</h2>
+                    <p>Reported payload bytes per minute</p>
+                  </div>
+                  <span class="subtle-tag">LAST 60 MINUTES</span>
+                </div>
+                <div class="chart-legend">
+                  <span><i class="swatch inbound"></i> Inbound</span
+                  ><span><i class="swatch outbound"></i> Outbound</span>
+                </div>
+                <div id="traffic-chart" class="chart empty">
+                  <div>
+                    <span class="empty-icon">⌁</span>
+                    <h3>Waiting for telemetry</h3>
+                    <p>
+                      Traffic appears here when your edge sensor starts
+                      reporting.
+                    </p>
+                  </div>
+                </div>
+                <div class="panel-foot">
+                  <span class="dot"></span> Sampled observations; fast-path
+                  traffic may be underrepresented.
+                </div>
+              </article>
+              <article class="panel health-panel">
+                <div class="panel-heading">
+                  <div>
+                    <h2>Protection pipeline</h2>
+                    <p>From the edge to the control plane</p>
+                  </div>
+                  <span class="tiny-icon">⌘</span>
+                </div>
+                <div id="pipeline" class="pipeline"></div>
+                <a href="#engine" class="panel-link"
+                  >View engine health <span>↗</span></a
+                >
+              </article>
+            </div>
+            <div class="overview-grid lower">
+              <article class="panel">
+                <div class="panel-heading">
+                  <div>
+                    <h2>Recent incidents</h2>
+                    <p>Statistical alerts and supervisor reviews</p>
+                  </div>
+                  <a href="#incidents" class="text-link">View all ↗</a>
+                </div>
+                <div id="recent-incidents" class="empty compact">
+                  <div>
+                    <span class="empty-icon">◇</span>
+                    <h3>No incident data yet</h3>
+                    <p>Recorded findings will appear here.</p>
+                  </div>
+                </div>
+              </article>
+              <article class="panel">
+                <div class="panel-heading">
+                  <div>
+                    <h2>Response activity</h2>
+                    <p>Track requests through to the edge</p>
+                  </div>
+                </div>
+                <div id="recent-commands" class="empty compact">
+                  <div>
+                    <span class="empty-icon">↳</span>
+                    <h3>No actions requested</h3>
+                    <p>Isolation and restoration requests appear here.</p>
+                  </div>
+                </div>
+              </article>
+            </div>
+          </section>
+          <section id="view-devices" class="view" hidden>
+            <article class="panel">
+              <div class="panel-heading">
+                <div>
+                  <h2>Device inventory</h2>
+                  <p>Devices observed by your network sensor</p>
+                </div>
+                <button id="export" class="button secondary small" disabled>
+                  ↓ Export CSV
+                </button>
+              </div>
+              <div class="table-toolbar">
+                <label class="search"
+                  ><span>⌕</span
+                  ><input
+                    id="device-search"
+                    type="search"
+                    placeholder="Search MAC, IP, or hostname"
+                    aria-label="Search devices" /></label
+                ><select id="device-filter" aria-label="Filter device state">
+                  <option value="all">All states</option>
+                  <option value="allowed">Allowed</option>
+                  <option value="blocked">Blocked</option>
+                  <option value="suspicious">Suspicious</option></select
+                ><span id="device-result-count" class="muted"></span>
+              </div>
+              <div class="table-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Device</th>
+                      <th>IP address</th>
+                      <th>Last confirmed state</th>
+                      <th>Last seen</th>
+                      <th>Response</th>
+                    </tr>
+                  </thead>
+                  <tbody id="devices-body"></tbody>
+                </table>
+              </div>
+            </article>
+            <p class="footnote">
+              Device names and IP addresses appear only when the sensor provides
+              them. Requests remain pending until the daemon acknowledges the
+              kernel map update.
             </p>
-            <div class="formula-box">
-              Z = |X - &mu;| / (&sigma; + 10⁻⁸)
+          </section>
+          <section id="view-incidents" class="view" hidden>
+            <article class="panel">
+              <div class="panel-heading">
+                <div>
+                  <h2>Incident history</h2>
+                  <p>Latest 100 recorded engine findings</p>
+                </div>
+                <label class="search"
+                  ><span>⌕</span
+                  ><input
+                    id="incident-search"
+                    type="search"
+                    placeholder="Search findings"
+                    aria-label="Search incidents"
+                /></label>
+              </div>
+              <div id="incidents-list"></div>
+            </article>
+          </section>
+          <section id="view-intelligence" class="view" hidden>
+            <div class="notice neutral">
+              <span class="notice-symbol">◎</span>
+              <div>
+                <strong>Explicitly configured indicators</strong>
+                <p>
+                  These indicators come from the server’s configured
+                  intelligence file and are sent when a sensor connects. No
+                  sample indicators or generated blocklists are included.
+                </p>
+              </div>
             </div>
-            <ul class="ai-feature-list">
-              <li><strong>Exfiltration ratio:</strong> Bytes out over bytes in, isolating heavy egress from download traffic.</li>
-              <li><strong>Connection failure rate:</strong> Spikes in dropped frames and TCP resets indicating network scans.</li>
-              <li><strong>Shannon port entropy:</strong> Identifies bindings across high-numbered dynamic ports.</li>
-              <li><strong>Anomaly trigger threshold:</strong> Any metric exceeding Z &gt; 3.0 triggers Tier 2 evaluation.</li>
-            </ul>
-          </div>
-
-          <div class="card">
-            <div class="card-header">
-              <h3 class="card-title">Tier 2: Cognitive LLM supervisor</h3>
-              <span class="badge">Deterministic evaluation</span>
+            <div class="overview-grid equal">
+              <article class="panel">
+                <div class="panel-heading">
+                  <h2>Blocked IP addresses</h2>
+                  <span id="ip-count" class="count">0</span>
+                </div>
+                <ul id="intel-ips" class="indicator-list"></ul>
+              </article>
+              <article class="panel">
+                <div class="panel-heading">
+                  <h2>Domain filter</h2>
+                  <span id="domain-count" class="count">0</span>
+                </div>
+                <ul id="intel-domains" class="indicator-list"></ul>
+              </article>
             </div>
-            <p style="font-size: 0.8rem; color: var(--text-muted); line-height: 1.5; margin-bottom: 12px;">
-              Upon Tier 1 threshold breach, the Axum control plane dispatches asynchronous telemetry to the LLM supervisor with temperature fixed to 0.1 and strict schema enforcement:
-            </p>
-            <pre class="schema-box">
-{
-  "threat_name": "Data Exfiltration Breach",
-  "confidence": 96,
-  "human_explanation": "Outbound spike on unusual dynamic port",
-  "should_block": true
-}</pre>
-            <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 10px; line-height: 1.45;">
-              When <code>should_block = true</code>, the control plane issues an in-kernel quarantine update to the eBPF MAC map.
-            </p>
-          </div>
-        </div>
-      </section>
-
-      <!-- ==================== VIEW 4: THREAT INTEL ==================== -->
-      <section id="view-threat-intel" class="view-section">
-        <div class="section-header">
-          <div class="section-title-wrap">
-            <h2>Threat intelligence</h2>
-            <p>Kernel-synchronized blocklists and domain sinkhole feeds</p>
-          </div>
-          <div>
-            <span class="live-pill">Feed refresh interval: 12h</span>
-          </div>
-        </div>
-
-        <div class="dashboard-split">
-          <div class="card">
-            <div class="card-header">
-              <h3 class="card-title">Emerging Threats C2 IP blocklist</h3>
-              <span class="badge">eBPF LRU Map</span>
-            </div>
-            <ul id="threat-intel-ips">
-              <!-- Populated dynamically by app.js -->
-            </ul>
-          </div>
-
-          <div class="card">
-            <div class="card-header">
-              <h3 class="card-title">StevenBlack DNS sinkhole domains</h3>
-              <span class="badge">Bloom Filter O(1)</span>
-            </div>
-            <ul id="threat-intel-domains">
-              <!-- Populated dynamically by app.js -->
-            </ul>
-          </div>
-        </div>
-      </section>
-
-      <!-- ==================== VIEW 5: ARCHITECTURAL PILLARS (REFERENCE) ==================== -->
-      <section id="view-pillars" class="view-section">
-        <div class="section-header">
-          <div class="section-title-wrap">
-            <h2>Architecture documentation</h2>
-            <p>Ten core design specifications for Project CIPHER</p>
-          </div>
-        </div>
-
-        <div class="pillars-grid">
-          <div class="pillar-card">
-            <div class="pillar-number">PILLAR 01</div>
-            <div class="pillar-title">eBPF/XDP Zero-Copy Execution</div>
-            <div class="pillar-desc">Evaluates packets at the NIC driver level, dropping attacks before sk_buff memory allocation.</div>
-          </div>
-
-          <div class="pillar-card">
-            <div class="pillar-number">PILLAR 02</div>
-            <div class="pillar-title">Split-Plane Architecture</div>
-            <div class="pillar-desc">Decouples high-speed data plane processing on the router from the cloud control plane.</div>
-          </div>
-
-          <div class="pillar-card">
-            <div class="pillar-number">PILLAR 03</div>
-            <div class="pillar-title">8-Bit Threat Diagnostic Mask</div>
-            <div class="pillar-desc">Packs multidimensional kernel verdicts into a single byte of memory via bitwise flags.</div>
-          </div>
-
-          <div class="pillar-card">
-            <div class="pillar-number">PILLAR 04</div>
-            <div class="pillar-title">DNS Sinkholing via Bloom Filters</div>
-            <div class="pillar-desc">O(1) time complexity mathematical Bloom Filters inside kernel memory for domain blocking.</div>
-          </div>
-
-          <div class="pillar-card">
-            <div class="pillar-number">PILLAR 05</div>
-            <div class="pillar-title">Layer 4 Heuristic Analysis</div>
-            <div class="pillar-desc">Detection of RFC protocol violations, invalid TCP flag combinations, and legacy protocol usage.</div>
-          </div>
-
-          <div class="pillar-card">
-            <div class="pillar-number">PILLAR 06</div>
-            <div class="pillar-title">TCP Session Tracking (Fast Path)</div>
-            <div class="pillar-desc">Bypasses deep inspection for elephant flows via LRU hash maps with statistical sampling.</div>
-          </div>
-
-          <div class="pillar-card">
-            <div class="pillar-number">PILLAR 07</div>
-            <div class="pillar-title">Zero-Trust WebSockets & Argon2id</div>
-            <div class="pillar-desc">Memory-hard password hashing and cryptographic HTTP upgrade handshake validation.</div>
-          </div>
-
-          <div class="pillar-card">
-            <div class="pillar-number">PILLAR 08</div>
-            <div class="pillar-title">Probabilistic Memory (HyperLogLog)</div>
-            <div class="pillar-desc">Static RAM footprint per device for cardinality estimation, immune to state exhaustion attacks.</div>
-          </div>
-
-          <div class="pillar-card">
-            <div class="pillar-number">PILLAR 09</div>
-            <div class="pillar-title">Two-Tier Hybrid Detection Engine</div>
-            <div class="pillar-desc">Combines sub-millisecond Z-Score statistical reflexes with LLM cognitive supervisor analysis.</div>
-          </div>
-
-          <div class="pillar-card">
-            <div class="pillar-number">PILLAR 10</div>
-            <div class="pillar-title">Fail-Open Watchdog</div>
-            <div class="pillar-desc">Hardware-level fault tolerance bypassing quarantine if user-space heartbeat stops.</div>
-          </div>
-        </div>
-      </section>
-
-    </div>
-  </main>
-
-  <!-- ======================================================================
-       3. Authentication Modal
-       ====================================================================== -->
-  <div class="modal-overlay" id="auth-modal">
-    <div class="modal-box">
-      <button class="modal-close" id="btn-close-auth">&times;</button>
-      <div class="modal-header">
-        <h3 id="auth-modal-title">Authenticate to CIPHER</h3>
-        <p>Enter administrator credentials to manage physical hardware and security policies.</p>
+          </section>
+          <section id="view-engine" class="view" hidden>
+            <article class="panel">
+              <div class="panel-heading">
+                <div>
+                  <h2>Engine status</h2>
+                  <p>Reported health, configuration, and telemetry freshness</p>
+                </div>
+              </div>
+              <div id="engine-details" class="engine-details"></div>
+            </article>
+            <article class="panel engine-notes">
+              <h2>How your data reaches CIPHER</h2>
+              <div class="architecture">
+                <span
+                  >01 <strong>eBPF / XDP</strong
+                  ><small>Packet metadata</small></span
+                ><b>→</b
+                ><span
+                  >02 <strong>Rust daemon</strong
+                  ><small>10-second summaries</small></span
+                ><b>→</b
+                ><span
+                  >03 <strong>Control plane</strong
+                  ><small>Analysis & response</small></span
+                >
+              </div>
+              <p>
+                The dashboard refreshes every three seconds. Traffic totals
+                describe received observations, not full wire throughput. The
+                statistical engine builds a baseline from 50 reports per device;
+                deeper review requires a configured LLM supervisor.
+              </p>
+            </article>
+          </section>
+          <footer>
+            <span><b>CIPHER</b> / NETWORK DETECTION & RESPONSE</span
+            ><span id="last-updated">Awaiting authenticated connection</span>
+          </footer>
+        </main>
       </div>
-
+    </div>
+    <dialog id="auth-dialog">
       <form id="auth-form">
-        <div class="form-group">
-          <label for="auth-username">Username</label>
-          <input type="text" id="auth-username" class="form-input" placeholder="admin_soc" required>
+        <div class="dialog-heading">
+          <div>
+            <div class="eyebrow">OPERATOR ACCESS</div>
+            <h2 id="auth-title">Welcome to CIPHER</h2>
+          </div>
+          <button
+            type="button"
+            id="auth-close"
+            class="icon-button"
+            aria-label="Close sign in"
+          >
+            ×
+          </button>
         </div>
-
-        <div class="form-group">
-          <label for="auth-email">Email Address</label>
-          <input type="email" id="auth-email" class="form-input" placeholder="admin@cipher.security" required>
-        </div>
-
-        <div class="form-group">
-          <label for="auth-password">Password</label>
-          <input type="password" id="auth-password" class="form-input" placeholder="••••••••••••" required>
-        </div>
-
-        <button type="submit" class="btn btn-primary" id="auth-submit-btn" style="width: 100%; margin-top: 8px;">
-          Sign in
+        <p id="auth-description">Sign in to your network workspace.</p>
+        <label
+          >Username<input
+            id="auth-username"
+            autocomplete="username"
+            required
+            maxlength="100" /></label
+        ><label id="email-label" hidden
+          >Email<input
+            id="auth-email"
+            type="email"
+            autocomplete="email" /></label
+        ><label
+          >Password<input
+            id="auth-password"
+            type="password"
+            autocomplete="current-password"
+            required
+        /></label>
+        <p id="auth-error" class="error-message" role="alert"></p>
+        <button id="auth-submit" class="button full" type="submit">
+          Sign in →</button
+        ><button id="auth-toggle" class="text-button full" type="button">
+          New installation? Create an account
         </button>
+        <p id="signup-note" class="footnote" hidden>
+          The first account is assigned administrator access to the configured
+          network. Further accounts need a network assignment.
+        </p>
       </form>
-
-      <div style="margin-top: 14px; text-align: center; font-size: 0.78rem;">
-        <a href="#" id="auth-toggle-mode" style="color: var(--brand-primary-text); text-decoration: none; font-weight: 600;">Need an account? Sign up</a>
-      </div>
-    </div>
-  </div>
-
-  <!-- ======================================================================
-       4. Toast Notification Container
-       ====================================================================== -->
-  <div class="toast-container" id="toast-container"></div>
-
-</div>
-
-<!-- Scripts (Untouched) -->
-<script src="app.js"></script>
-</body>
+    </dialog>
+    <dialog id="action-dialog">
+      <form id="action-form">
+        <div class="dialog-heading">
+          <h2 id="action-title">Isolate device?</h2>
+          <button
+            type="button"
+            id="action-close"
+            class="icon-button"
+            aria-label="Cancel action"
+          >
+            ×
+          </button>
+        </div>
+        <p id="action-description"></p>
+        <p id="action-error" class="error-message" role="alert"></p>
+        <div class="dialog-actions">
+          <button type="button" id="action-cancel" class="button secondary">
+            Cancel</button
+          ><button id="action-submit" class="button" type="submit">
+            Send request
+          </button>
+        </div>
+      </form>
+    </dialog>
+    <div id="toast" role="status" aria-live="polite" hidden></div>
+  </body>
 </html>
