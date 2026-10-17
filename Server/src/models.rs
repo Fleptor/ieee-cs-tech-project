@@ -3,7 +3,7 @@ use jsonwebtoken::errors::Error;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::sync::Arc;
-use tokio::sync::{RwLock, broadcast};
+use tokio::sync::RwLock;
 
 type SharedDatabase = sqlx::SqlitePool;
 
@@ -30,6 +30,7 @@ pub struct NetworkDevice {
     pub manufacturer: String,
     pub state: DeviceState,
     pub last_seen: String,
+    pub trusted: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -70,18 +71,12 @@ impl From<String> for DeviceState {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct DeviceCommand {
-    pub network_id: String,
-    pub mac: String,
-    pub state: DeviceState,
-}
-
 #[derive(Clone)]
 pub struct AppState {
     pub sensors: Arc<RwLock<std::collections::HashMap<String, SensorStatus>>>,
     pub db: sqlx::SqlitePool,
-    pub tx: broadcast::Sender<DeviceCommand>,
+    pub supervisor: Arc<crate::ai::Supervisor>,
+    pub mutation: Arc<tokio::sync::Mutex<()>>,
     pub threat_intel: Arc<RwLock<crate::ai::GlobalThreatIntel>>,
 }
 impl axum::extract::FromRef<AppState> for SharedDatabase {
@@ -162,4 +157,8 @@ pub struct SensorStatus {
     pub last_heartbeat: i64,
     pub interface: String,
     pub xdp_attached: bool,
+    pub simulated: bool,
+    pub policy_revision: i64,
+    #[serde(skip)]
+    pub connection_id: u64,
 }

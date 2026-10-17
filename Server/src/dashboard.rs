@@ -19,6 +19,7 @@ pub async fn initialize(db: &sqlx::SqlitePool) -> Result<(), sqlx::Error> {
     // Remove only the wholly blank placeholder left by the original prototype.
     sqlx::query("DELETE FROM devices WHERE network_id='' AND mac='' AND hostname='' AND ip='' AND manufacturer='' AND state='' AND last_seen=''")
         .execute(db).await?;
+    crate::policy::initialize(db).await?;
     Ok(())
 }
 
@@ -80,19 +81,34 @@ pub async fn snapshot(
             .bind(&network)
             .fetch_all(&state.db)
             .await?;
-    let incidents: Vec<Value> = audit.iter().map(|r| json!({"id":r.get::<i64,_>("id"),"mac":r.get::<String,_>("mac"),"threat_name":r.get::<String,_>("threat_name"),"confidence":r.get::<i64,_>("confidence"),"explanation":r.get::<String,_>("explanation"),"timestamp":r.get::<Option<String>,_>("timestamp")})).collect();
+    let incidents: Vec<Value> = audit.iter().map(|r| json!({"id":r.get::<i64,_>("id"),"mac":r.get::<String,_>("mac"),"threat_name":r.get::<String,_>("threat_name"),"confidence":r.get::<i64,_>("confidence"),"explanation":r.get::<String,_>("explanation"),"timestamp":r.get::<Option<String>,_>("timestamp"),"review_status":r.get::<String,_>("review_status"),"disposition":r.get::<String,_>("disposition"),"action":r.get::<String,_>("action"),"note":r.get::<String,_>("note"),"evidence":serde_json::from_str::<Value>(r.get::<&str,_>("evidence")).unwrap_or(json!({}))})).collect();
     let rows = sqlx::query(
         "SELECT * FROM device_commands WHERE network_id = ? ORDER BY id DESC LIMIT 100",
     )
     .bind(&network)
     .fetch_all(&state.db)
     .await?;
-    let commands: Vec<Value> = rows.iter().map(|r| json!({"id":r.get::<i64,_>("id"),"mac":r.get::<String,_>("mac"),"state":r.get::<String,_>("state"),"status":r.get::<String,_>("status"),"detail":r.get::<String,_>("detail"),"created_at":r.get::<i64,_>("created_at")})).collect();
+    let commands: Vec<Value> = rows.iter().map(|r| json!({"id":r.get::<i64,_>("id"),"mac":r.get::<String,_>("mac"),"state":r.get::<String,_>("state"),"status":r.get::<String,_>("status"),"detail":r.get::<String,_>("detail"),"created_at":r.get::<i64,_>("created_at"),"automatic":r.get::<bool,_>("automatic")})).collect();
     let sensor = state.sensors.read().await.get(&network).cloned();
     let online = sensor.as_ref().is_some_and(|s| now - s.last_heartbeat < 25);
+    let policy = crate::policy::wire_policy(&state.db, &network).await?;
+    let baselines = sqlx::query("SELECT mac,data FROM baselines WHERE network_id=?")
+        .bind(&network)
+        .fetch_all(&state.db)
+        .await?;
+    let baselines: Vec<Value> = baselines
+        .iter()
+        .filter_map(|r| {
+            serde_json::from_str::<crate::ai::NetworkBaseline>(r.get("data"))
+                .ok()
+                .map(|b| json!({"mac":r.get::<String,_>("mac"),"samples":b.samples()}))
+        })
+        .collect();
+    let activity = sqlx::query("SELECT actor,action,detail,created_at FROM operator_audit WHERE network_id=? ORDER BY id DESC LIMIT 50").bind(&network).fetch_all(&state.db).await?;
+    let activity: Vec<Value> = activity.iter().map(|r|json!({"actor":r.get::<String,_>("actor"),"action":r.get::<String,_>("action"),"detail":r.get::<String,_>("detail"),"created_at":r.get::<i64,_>("created_at")})).collect();
     Ok(Json(
-        json!({"network_id": network, "server_time": now, "sensor_online": online, "sensor":sensor,
-        "llm_configured":std::env::var("LLM_API_KEY").is_ok_and(|k| !k.is_empty()), "devices":devices,
+        json!({"network_id": network,"policy":policy,"baselines":baselines,"activity":activity,"demo_mode":std::env::var("CIPHER_DEMO_MODE").as_deref()==Ok("1"),"supervisor":state.supervisor.status().await, "server_time": now, "sensor_online": online, "sensor":sensor,
+        "llm_configured":state.supervisor.configured(), "devices":devices,
         "telemetry":telemetry,"telemetry_limit":5000,"incidents":incidents,"commands":commands,
         "threat_intel":*state.threat_intel.read().await}),
     ))
@@ -101,9 +117,10 @@ pub async fn snapshot(
 pub async fn command(
     State(state): State<AppState>,
     claims: Claims,
-    Json(payload): Json<ChangeStateRequest>,
+    Json(mut payload): Json<ChangeStateRequest>,
 ) -> Result<Json<Value>, AppError> {
     authorize(&state.db, &claims, &payload.network_id, true).await?;
+    payload.mac = crate::policy::normalize_mac(&payload.mac).ok_or(AppError::Conflict)?;
     if payload.state == DeviceState::Suspicious {
         return Err(AppError::Conflict);
     }
@@ -116,21 +133,29 @@ pub async fn command(
     if !exists {
         return Err(AppError::NotFound);
     }
-    let mut tx = state.db.begin().await?;
-    // A newer desired state supersedes any unsatisfied request for this device.
-    sqlx::query("UPDATE device_commands SET status = 'superseded' WHERE network_id = ? AND mac = ? AND status IN ('pending','sent')")
-        .bind(&payload.network_id).bind(&payload.mac).execute(&mut *tx).await?;
-    let id = sqlx::query(
-        "INSERT INTO device_commands (network_id,mac,state,created_at) VALUES (?,?,?,?)",
+    let _guard = state.mutation.lock().await;
+    crate::policy::wire_policy(&state.db, &payload.network_id).await?;
+    // Invalidate in-flight automatic decisions when an operator takes control.
+    sqlx::query("UPDATE network_policy SET revision=revision+1 WHERE network_id=?")
+        .bind(&payload.network_id)
+        .execute(&state.db)
+        .await?;
+    let id = crate::policy::queue(
+        &state.db,
+        &payload.network_id,
+        &payload.mac,
+        &payload.state.to_string(),
+        false,
     )
-    .bind(&payload.network_id)
-    .bind(&payload.mac)
-    .bind(payload.state.to_string())
-    .bind(chrono::Utc::now().timestamp())
-    .execute(&mut *tx)
-    .await?
-    .last_insert_rowid();
-    tx.commit().await?;
+    .await?;
+    crate::policy::audit(
+        &state.db,
+        &payload.network_id,
+        &claims.username,
+        "manual_response",
+        &format!("{}: {} (command {id})", payload.mac, payload.state),
+    )
+    .await?;
     Ok(Json(json!({"id":id,"status":"pending"})))
 }
 
@@ -142,24 +167,28 @@ pub async fn record_telemetry(
     anomaly: bool,
 ) -> Result<(), sqlx::Error> {
     let now = chrono::Utc::now().timestamp();
-    let mac = t.mac().unwrap_or_default();
-    let payload = json!({"mac":mac,"received_at":now,"bytes_in":t.bytes_in(),"bytes_out":t.bytes_out(),
+    let mac = t.mac().unwrap_or_default().to_uppercase();
+    let payload = json!({"mac":mac,"received_at":now,"captured_at":t.captured_at(),"report_id":t.report_id(),"bytes_in":t.bytes_in(),"bytes_out":t.bytes_out(),
         "total_connections":t.total_connections(),"passed_connections":t.passed_connections(),"dropped_connections":t.dropped_connections(),
         "anomaly_flags_count":t.anomaly_flags_count(),"heuristic_flags_count":t.heuristic_flags_count(),"infra_alert_count":t.infra_alert_count(),
         "unique_external_ips":t.unique_external_ips(),"port_entropy_score":t.port_entropy_score(),"baseline_samples":learning,"is_anomaly":anomaly});
     let mut tx = state.db.begin().await?;
     // The current daemon sends telemetry without a separate registration message.
     sqlx::query("INSERT INTO devices (network_id,mac,hostname,ip,manufacturer,state,last_seen) VALUES (?,?,'','','','allowed',?) ON CONFLICT(network_id,mac) DO UPDATE SET last_seen=excluded.last_seen")
-        .bind(network).bind(mac).bind(chrono::Utc::now().to_rfc3339()).execute(&mut *tx).await?;
+        .bind(network).bind(&mac).bind(chrono::Utc::now().to_rfc3339()).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO telemetry (network_id,mac,received_at,payload) VALUES (?,?,?,?)")
         .bind(network)
-        .bind(mac)
+        .bind(&mac)
         .bind(now)
         .bind(payload.to_string())
         .execute(&mut *tx)
         .await?;
     sqlx::query("DELETE FROM telemetry WHERE received_at < ?")
         .bind(now - 86400)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM telemetry_receipts WHERE received_at < ?")
+        .bind(now - 7 * 86400)
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;

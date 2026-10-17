@@ -8,13 +8,13 @@ all: ebpf daemon
 ebpf:
 	@echo "🧠 Compiling Data Plane (eBPF C Code)..."
 	@mkdir -p Router/ebpf/target
-	
-	# We use clang with the BPF target. 
+
+	# We use clang with the BPF target.
 	# -O2 is strictly required for the Linux Kernel Verifier to accept the eBPF loops/jumps
 	clang -O2 -g -target bpf -Wall -Werror \
 		-c Router/ebpf/src/kernel_space.c \
 		-o Router/ebpf/target/cipher_ebpf.o
-	
+
 	@echo "✅ eBPF Compilation complete! (Saved to Router/ebpf/target/cipher_ebpf.o)"
 
 # 2. Compile the Rust User-Space Daemon
@@ -27,6 +27,7 @@ daemon:
 flatbuffers:
 	@echo "📦 Generating FlatBuffers Rust code..."
 	flatc --rust -o Router/daemon/src/ router.fbs
+	flatc --rust -o Server/src/ router.fbs
 	@echo "✅ FlatBuffers updated!"
 
 # 4. Clean the workspace

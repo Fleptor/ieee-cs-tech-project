@@ -223,6 +223,13 @@ async function refresh() {
   state.loading = true;
   $("refresh").disabled = true;
   try {
+    const encoded = state.token.split(".")[1].replaceAll("-", "+").replaceAll("_", "/");
+    const expires = JSON.parse(atob(encoded)).exp;
+    if (expires - Date.now() / 1000 < 900) {
+      const token = await api("/api/session/refresh", "POST", {});
+      if (generation !== state.generation) return;
+      state.token = token; sessionStorage.setItem("cipher_token", token);
+    }
     const data = await api(`/api/dashboard/${encodeURIComponent(network)}`);
     if (generation !== state.generation || network !== state.network) return;
     state.data = data;
@@ -243,6 +250,8 @@ async function refresh() {
         "Sensor connected · waiting for traffic",
         "Your edge daemon is reporting. Device activity will appear after the first telemetry report.",
       );
+    else if (data.demo_mode || data.sensor?.simulated)
+      notice("Booth simulation", "Scenario telemetry and sensor acknowledgments are simulated. Statistical analysis and configured supervisor calls run through the real server.");
     else $("notice").hidden = true;
     $("last-updated").textContent =
       `Updated ${date(data.server_time)} · refreshes every 3s`;
@@ -348,7 +357,7 @@ function renderHealth() {
       "01",
       "Packet sensor",
       d?.sensor?.interface || "eBPF / XDP",
-      online && d?.sensor?.xdp_attached ? "Attached" : "Unknown",
+      d?.sensor?.simulated ? "Simulated" : online && d?.sensor?.xdp_attached ? "Attached" : "Unknown",
     ],
     [
       "02",
@@ -370,11 +379,7 @@ function renderHealth() {
     )
     .join("");
   const last = d?.telemetry.at(-1),
-    trained = new Set(
-      (d?.telemetry || [])
-        .filter((t) => t.baseline_samples >= 50)
-        .map((t) => t.mac),
-    ).size;
+    trained = (d?.baselines || []).filter(b => b.samples >= 50).length;
   const rows = [
     [
       "Control plane",
@@ -403,9 +408,8 @@ function renderHealth() {
     ],
     [
       "LLM supervisor",
-      d?.llm_configured
-        ? "Configured · availability checked on review"
-        : "Not configured",
+      d?.supervisor?.health?.last_error || d?.supervisor?.configuration_error ||
+        (d?.supervisor?.health?.last_success ? `Last successful review ${date(d.supervisor.health.last_success)}` : d?.supervisor?.configured ? "Configured · not yet verified" : "Not configured"),
     ],
     [
       "Available telemetry",
@@ -413,6 +417,11 @@ function renderHealth() {
         ? `${fmt(d.telemetry.length)} reports · last hour · up to ${fmt(d.telemetry_limit)}`
         : "None",
     ],
+    ["Supervisor provider", `${d?.supervisor?.provider || "—"} / ${d?.supervisor?.model || "Model not set"}`],
+    ["Response policy", d?.policy?.mode === "enforce" ? "Automatic isolation enabled" : "Monitor and alert"],
+    ["Policy delivery", !online ? "Sensor offline" : d?.sensor?.policy_revision === d?.policy?.revision ? "Acknowledged by sensor" : "Waiting for sensor acknowledgment"],
+    ["Trusted devices", String(d?.devices?.filter(v => v.trusted).length || 0)],
+    ["Alert cooldown", `${d?.supervisor?.cooldown_seconds || 120} seconds per device`],
     ["Intelligence delivery", "Sent on sensor connection"],
   ];
   $("engine-details").innerHTML = rows
@@ -421,6 +430,9 @@ function renderHealth() {
         `<div class="engine-row"><span>${k}</span><strong>${escapeHtml(v)}</strong></div>`,
     )
     .join("");
+  const admin = state.networks.find(n => n.network_id === state.network)?.is_admin;
+  $("engine-actions").innerHTML = `<button class="button secondary" data-policy="${d?.policy?.mode === "enforce" ? "observe" : "enforce"}" ${!admin || state.stale ? "disabled" : ""}>${d?.policy?.mode === "enforce" ? "Switch to monitor and alert" : "Enable automatic isolation"}</button><button class="button secondary" data-check-llm ${!admin || state.stale ? "disabled" : ""}>Test LLM connection</button><button class="button secondary" data-export-telemetry ${!d ? "disabled" : ""}>Export telemetry</button>`;
+  $("operator-activity").innerHTML = (d?.activity || []).slice(0, 15).map(a => `<div class="command-row"><div>${escapeHtml(a.actor)} · ${escapeHtml(a.action.replaceAll("_", " "))}<small>${escapeHtml(a.detail)} · ${escapeHtml(date(a.created_at))}</small></div></div>`).join("") || empty("No operator actions", "Policy changes and incident reviews will appear here.");
 }
 function renderDevices() {
   const devices = state.data?.devices || [],
@@ -428,7 +440,7 @@ function renderDevices() {
     filter = $("device-filter").value;
   const filtered = devices.filter(
     (d) =>
-      (filter === "all" || d.state === filter) &&
+      (filter === "all" || (filter === "trusted" ? d.trusted : d.state === filter)) &&
       [d.mac, d.ip, d.hostname, d.manufacturer].some((v) =>
         v?.toLowerCase().includes(query),
       ),
@@ -446,13 +458,15 @@ function renderDevices() {
           const command = state.data.commands.find((c) => c.mac === d.mac);
           const pending =
             command && ["pending", "sent"].includes(command.status);
-          return `<tr><td><strong>${escapeHtml(d.hostname || "Unnamed device")}</strong><small class="mono">${escapeHtml(d.mac)}</small></td><td class="mono">${escapeHtml(d.ip || "Not reported")}</td><td>${badge(d.state)}${command ? `<small>${escapeHtml(command.state === "blocked" ? "Isolate" : "Restore")}: ${escapeHtml(command.status)}</small>` : ""}</td><td>${escapeHtml(date(d.last_seen))}</td><td><button class="button small ${d.state === "blocked" ? "secondary" : "danger"}" data-mac="${escapeHtml(d.mac)}" data-state="${d.state === "blocked" ? "allowed" : "blocked"}" ${!admin || state.stale || pending ? "disabled" : ""}>${pending ? "Awaiting response" : d.state === "blocked" ? "Restore access" : "Isolate"}</button></td></tr>`;
+          return `<tr><td><strong>${escapeHtml(d.hostname || "Unnamed device")}</strong><small class="mono">${escapeHtml(d.mac)}</small></td><td class="mono">${escapeHtml(d.ip || "Not reported")}</td><td>${badge(d.state)}${d.trusted ? badge("Trusted", "online") : ""}<small>Baseline: ${state.data.baselines?.find(b => b.mac === d.mac)?.samples || 0}/50</small>${command ? `<small>${escapeHtml(command.state === "blocked" ? "Isolate" : "Restore")}: ${escapeHtml(command.status)}</small>` : ""}</td><td>${escapeHtml(date(d.last_seen))}</td><td><button class="button small ${d.state === "blocked" ? "secondary" : "danger"}" data-mac="${escapeHtml(d.mac)}" data-state="${d.state === "blocked" ? "allowed" : "blocked"}" ${!admin || state.stale || pending ? "disabled" : ""}>${pending ? "Awaiting response" : d.state === "blocked" ? "Restore access" : "Isolate"}</button><button class="button small secondary" data-trust="${!d.trusted}" data-mac="${escapeHtml(d.mac)}" ${!admin || state.stale ? "disabled" : ""}>${d.trusted ? "Revoke trust" : "Trust & restore"}</button><button class="button small secondary" data-reset-baseline data-mac="${escapeHtml(d.mac)}" ${!admin || state.stale ? "disabled" : ""}>Relearn baseline</button></td></tr>`;
         })
         .join("")
     : `<tr><td colspan="5">${empty(devices.length ? "No matching devices" : "No devices observed", devices.length ? "Try a different search or state filter." : state.token ? "Devices appear after the sensor sends telemetry." : "Sign in to view your network inventory.")}</td></tr>`;
 }
 function incidentMarkup(log) {
-  return `<article class="incident"><div class="incident-top"><h3>${escapeHtml(log.threat_name)}</h3>${badge(log.confidence ? `${log.confidence}% confidence` : "Review needed", log.confidence ? "unknown" : "learning")}</div><p>${escapeHtml(log.explanation)}</p><div class="incident-meta"><span class="mono">${escapeHtml(log.mac)}</span><time>${escapeHtml(date(log.timestamp))}</time></div></article>`;
+  const admin = state.networks.find(n => n.network_id === state.network)?.is_admin;
+  const reasons = log.evidence?.measurements?.reasons || [];
+  return `<article class="incident"><div class="incident-top"><h3>${escapeHtml(log.threat_name)}</h3>${badge(log.disposition || "open", log.disposition === "open" ? "learning" : "online")}</div><p>${escapeHtml(log.explanation)}</p><p>Supervisor: ${escapeHtml(log.review_status || "not requested")} · Action: ${escapeHtml((log.action || "alert_only").replaceAll("_", " "))}${log.confidence ? ` · Model confidence: ${log.confidence}/100 (self-reported)` : ""}</p>${reasons.length ? `<details><summary>Detection evidence</summary><ul>${reasons.map(r => `<li>${escapeHtml(r)}</li>`).join("")}</ul></details>` : ""}<div class="incident-meta"><span class="mono">${escapeHtml(log.mac)}</span><time>${escapeHtml(date(log.timestamp))}</time></div>${log.note ? `<p>Review note: ${escapeHtml(log.note)}</p>` : ""}<div class="incident-actions">${["resolved", "false_positive", "open"].filter(v => v !== log.disposition).map(v => `<button class="button small secondary" data-review-id="${log.id}" data-disposition="${v}" ${!admin || state.stale ? "disabled" : ""}>${v === "open" ? "Reopen" : v === "resolved" ? "Resolve" : "Mark false positive"}</button>`).join("")}</div></article>`;
 }
 function renderIncidents() {
   const logs = state.data?.incidents || [],
@@ -607,24 +621,61 @@ $("refresh").onclick = refresh;
 $("device-search").oninput = renderDevices;
 $("device-filter").onchange = renderDevices;
 $("incident-search").oninput = renderIncidents;
-$("devices-body").onclick = (event) => {
-  const button = event.target.closest("button[data-mac]");
-  if (!button || button.disabled) return;
-  state.action = {
-    network_id: state.network,
-    mac: button.dataset.mac,
-    state: button.dataset.state,
-  };
-  const block = state.action.state === "blocked";
-  $("action-title").textContent = block
-    ? "Isolate this device?"
-    : "Restore network access?";
-  $("action-description").textContent =
-    `${state.action.mac}: ${block ? "Request the edge sensor to block this device’s traffic." : "Request removal of this device’s MAC block."} ${state.data?.sensor_online ? "The state changes after the daemon confirms the update." : "The sensor is offline. This request will wait until it reconnects."}`;
-  $("action-submit").className = `button${block ? " danger" : ""}`;
+function openAction(path, payload, title, description) {
+  state.action = {path, payload};
+  $("action-title").textContent = title;
+  $("action-description").textContent = description;
+  $("action-submit").className = "button";
   $("action-error").textContent = "";
   $("action-dialog").showModal();
+}
+$("devices-body").onclick = event => {
+  const button = event.target.closest("button[data-mac]");
+  if (!button || button.disabled) return;
+  const payload = {network_id: state.network, mac: button.dataset.mac};
+  if (button.hasAttribute("data-trust")) {
+    payload.trusted = button.dataset.trust === "true";
+    openAction("/api/device/trust", payload, payload.trusted ? "Permanently trust and restore?" : "Revoke permanent trust?", payload.trusted ? "CIPHER will keep monitoring this device and raising alerts, but prevent automatic device isolation. Any existing MAC block will be removed after the sensor acknowledges. Manual isolation and packet-level filters remain available." : "This device becomes eligible for automatic isolation when enforcement is enabled. Monitoring continues.");
+  } else if (button.hasAttribute("data-reset-baseline")) {
+    openAction("/api/device/baseline/reset", payload, "Relearn this device’s baseline?", "Discard the saved statistical baseline and learn from the next 50 reports. Use representative normal traffic during this period.");
+  } else {
+    payload.state = button.dataset.state;
+    openAction("/api/change_state", payload, payload.state === "blocked" ? "Isolate this device?" : "Restore network access?", `${payload.mac}: the state changes after the sensor acknowledges. ${state.data?.sensor_online ? "" : "The sensor is offline; this request will wait for reconnection."}`);
+  }
 };
+document.addEventListener("click", async event => {
+  const button = event.target.closest("button");
+  if (!button || button.disabled) return;
+  if (button.hasAttribute("data-policy")) {
+    const mode = button.dataset.policy;
+    openAction("/api/policy", {network_id: state.network, mode}, "Change automatic response policy?", mode === "enforce" ? "Enable automatic device isolation for untrusted devices. Cloud reviews require at least two statistical signals and model confidence of 85/100. Edge heuristics may also isolate devices. Trusted devices remain monitored and exempt." : "Keep alerts, but stop new automatic device isolation. Existing blocks and packet-level filters remain active; restore blocked devices individually.");
+  } else if (button.hasAttribute("data-check-llm")) {
+    button.disabled = true;
+    toast("Checking the configured supervisor…");
+    try {
+      const result = await api("/api/supervisor/check", "POST", {network_id: state.network});
+      toast(result.ok ? "Supervisor responded with a valid verdict." : result.supervisor.health.last_error || "Supervisor unavailable.");
+      await refresh();
+    } catch (error) { toast(error.message); }
+    finally { button.disabled = false; }
+  } else if (button.hasAttribute("data-export-telemetry")) {
+    try {
+      const result = await api(`/api/telemetry/${encodeURIComponent(state.network)}`);
+      downloadJson(result, "cipher-telemetry.json");
+    } catch (error) { toast(error.message); }
+  } else if (button.hasAttribute("data-review-id")) {
+    try {
+      button.disabled = true;
+      await api("/api/incidents/review", "POST", {network_id: state.network, id: Number(button.dataset.reviewId), disposition: button.dataset.disposition});
+      await refresh();
+    } catch (error) { toast(error.message); button.disabled = false; }
+  }
+});
+function downloadJson(value, filename) {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], {type: "application/json"}));
+  const link = document.createElement("a"); link.href = url; link.download = filename; link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
 $("action-close").onclick = $("action-cancel").onclick = () =>
   $("action-dialog").close();
 $("action-form").onsubmit = async (event) => {
@@ -633,10 +684,10 @@ $("action-form").onsubmit = async (event) => {
   const generation = state.generation;
   $("action-submit").disabled = true;
   try {
-    await api("/api/change_state", "POST", state.action);
+    await api(state.action.path, "POST", state.action.payload);
     if (generation !== state.generation) return;
     $("action-dialog").close();
-    toast("Response requested. Waiting for the edge sensor to acknowledge.");
+    toast("Request saved. Engine health shows sensor policy acknowledgment.");
     await refresh();
   } catch (error) {
     $("action-error").textContent = error.message;

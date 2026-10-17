@@ -3,13 +3,14 @@ use axum::{
     routing::{delete, get, post},
 };
 use std::net::SocketAddr;
-use tokio::sync::broadcast;
+
 use tower_http::services::{ServeDir, ServeFile};
 mod ai;
 mod auth;
 mod dashboard;
 mod handlers;
 mod models;
+mod policy;
 mod router_socket;
 use crate::handlers::*;
 
@@ -28,7 +29,11 @@ pub mod router_generated;
 #[tokio::main]
 async fn main() {
     let _ = rustls::crypto::ring::default_provider().install_default();
-    dotenvy::dotenv().ok();
+    if let Ok(path) = std::env::var("CIPHER_ENV_FILE") {
+        dotenvy::from_path(path).ok();
+    } else {
+        dotenvy::dotenv().ok();
+    }
     auth::init_secrets();
 
     let options = sqlx::sqlite::SqliteConnectOptions::new()
@@ -36,11 +41,12 @@ async fn main() {
         .create_if_missing(true)
         .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal);
     let db = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
         .connect_with(options)
         .await
         .unwrap();
 
-    sqlx::query!(
+    sqlx::query(
         "
         CREATE TABLE IF NOT EXISTS networks (
         network_id TEXT NOT NULL,
@@ -48,25 +54,25 @@ async fn main() {
         is_admin INTEGER NOT NULL,
         PRIMARY KEY (network_id, username),
         FOREIGN KEY(username) REFERENCES users(username)
-        );"
+        );",
     )
     .execute(&db)
     .await
     .unwrap();
 
-    sqlx::query!(
+    sqlx::query(
         "
         CREATE TABLE IF NOT EXISTS users (
         username TEXT PRIMARY KEY,
         email TEXT NOT NULL UNIQUE,
         password TEXT NOT NULL
-        );"
+        );",
     )
     .execute(&db)
     .await
     .unwrap();
 
-    sqlx::query!(
+    sqlx::query(
         "
         CREATE TABLE IF NOT EXISTS devices (
         network_id TEXT NOT NULL,
@@ -77,13 +83,13 @@ async fn main() {
         state TEXT NOT NULL,
         last_seen TEXT NOT NULL,
         PRIMARY KEY (network_id, mac)
-        );"
+        );",
     )
     .execute(&db)
     .await
     .unwrap();
 
-    sqlx::query!(
+    sqlx::query(
         "
         CREATE TABLE IF NOT EXISTS audit_logs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -93,7 +99,7 @@ async fn main() {
         confidence INTEGER NOT NULL,
         explanation TEXT NOT NULL,
         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-        );"
+        );",
     )
     .execute(&db)
     .await
@@ -115,10 +121,11 @@ async fn main() {
         });
     let threat_intel = std::sync::Arc::new(tokio::sync::RwLock::new(intel));
 
-    let (tx, _rx) = broadcast::channel(100);
+    let supervisor = std::sync::Arc::new(ai::Supervisor::from_env());
     let app_state = crate::models::AppState {
         db,
-        tx,
+        supervisor,
+        mutation: Default::default(),
         threat_intel,
         sensors: Default::default(),
     };
@@ -136,6 +143,7 @@ async fn main() {
         .route("/api/owner/set_admin", post(make_network_and_assign_admin))
         .route("/api/Main/signup", post(signup_user))
         .route("/api/Main/login", post(login_user))
+        .route("/api/session/refresh", post(auth::refresh_session))
         .route("/api/Main/add_network", post(add_network_to_user))
         .route("/api/Main/change_admin", post(change_admin_of_network))
         .route("/api/get_devices", post(get_devices))
@@ -144,6 +152,12 @@ async fn main() {
         .route("/api/change_state", post(dashboard::command))
         .route("/api/networks", get(dashboard::networks))
         .route("/api/dashboard/:network_id", get(dashboard::snapshot))
+        .route("/api/device/trust", post(policy::trust))
+        .route("/api/device/baseline/reset", post(policy::reset_baseline))
+        .route("/api/policy", post(policy::set_policy))
+        .route("/api/incidents/review", post(policy::review_incident))
+        .route("/api/supervisor/check", post(policy::check_supervisor))
+        .route("/api/telemetry/:network_id", get(policy::export_telemetry))
         .route("/api/health", get(|| async { "ok" }))
         .route("/api/router/ws/:network_id", get(router_ws_handler))
         .fallback_service(serve_dir)

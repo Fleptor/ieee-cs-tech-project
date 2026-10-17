@@ -241,7 +241,7 @@
                     placeholder="Search MAC, IP, or hostname"
                     aria-label="Search devices" /></label
                 ><select id="device-filter" aria-label="Filter device state">
-                  <option value="all">All states</option>
+                  <option value="trusted">Trusted devices</option><option value="all" selected>All states</option>
                   <option value="allowed">Allowed</option>
                   <option value="blocked">Blocked</option>
                   <option value="suspicious">Suspicious</option></select
@@ -324,7 +324,7 @@
                   <p>Reported health, configuration, and telemetry freshness</p>
                 </div>
               </div>
-              <div id="engine-details" class="engine-details"></div>
+              <div id="engine-actions" class="engine-actions"></div><p class="footnote">Permanent trust prevents automatic device isolation while retaining alerts. Packet-level filters remain active.</p><div id="engine-details" class="engine-details"></div>
             </article>
             <article class="panel engine-notes">
               <h2>How your data reaches CIPHER</h2>
@@ -350,6 +350,7 @@
               </p>
             </article>
           </section>
+          <section class="panel"><div class="panel-heading"><h2>Operator activity</h2></div><div id="operator-activity"></div></section>
           <footer>
             <span><b>CIPHER</b> / NETWORK DETECTION & RESPONSE</span
             ><span id="last-updated">Awaiting authenticated connection</span>

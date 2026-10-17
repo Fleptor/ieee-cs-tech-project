@@ -15,34 +15,28 @@ pub async fn make_network_and_assign_admin(
     State(db): State<SharedDatabase>,
     Json(payload): Json<Network>,
 ) -> Result<StatusCode, AppError> {
-    let existing = sqlx::query!(
-        "SELECT 1 AS exists_flag FROM networks WHERE network_id = ?",
-        payload.network_id
-    )
-    .fetch_optional(&db)
-    .await?;
+    let existing = sqlx::query("SELECT 1 AS exists_flag FROM networks WHERE network_id = ?")
+        .bind(&payload.network_id)
+        .fetch_optional(&db)
+        .await?;
     if existing.is_some() {
         println!("Warning, Network already exists {}", payload.network_id);
         return Err(AppError::Conflict);
     }
-    let existing = sqlx::query!(
-        "SELECT 1 AS exists_flag FROM users WHERE username = ?",
-        payload.username
-    )
-    .fetch_optional(&db)
-    .await?;
+    let existing = sqlx::query("SELECT 1 AS exists_flag FROM users WHERE username = ?")
+        .bind(&payload.username)
+        .fetch_optional(&db)
+        .await?;
     if existing.is_none() {
         println!("Warning, no such user {}", payload.username);
         return Err(AppError::Conflict);
     }
-    sqlx::query!(
-        "INSERT INTO networks (network_id, username, is_admin) VALUES (?, ?, ?)",
-        payload.network_id,
-        payload.username,
-        1
-    )
-    .execute(&db)
-    .await?;
+    sqlx::query("INSERT INTO networks (network_id, username, is_admin) VALUES (?, ?, ?)")
+        .bind(&payload.network_id)
+        .bind(&payload.username)
+        .bind(&1)
+        .execute(&db)
+        .await?;
     Ok(StatusCode::ACCEPTED)
 }
 
@@ -51,7 +45,7 @@ pub async fn change_admin_of_network(
     State(db): State<SharedDatabase>,
     Json(payload): Json<ChangeAdminRequest>,
 ) -> Result<StatusCode, AppError> {
-    let old_admin = sqlx::query!("SELECT 1 AS exists_flag FROM networks Where network_id = ? AND username = ? AND is_admin = ?", payload.network_id, payload.old_admin, 1)
+    let old_admin = sqlx::query("SELECT 1 AS exists_flag FROM networks Where network_id = ? AND username = ? AND is_admin = ?").bind(&payload.network_id).bind(&payload.old_admin).bind(&1)
         .fetch_optional(&db)
         .await?;
     if old_admin.is_none() {
@@ -59,24 +53,21 @@ pub async fn change_admin_of_network(
     }
     verify_user(&db, &payload.old_admin, &payload.old_admin_password).await?;
 
-    let new_admin = sqlx::query!(
-        "SELECT 1 AS exists_flag FROM networks WHERE network_id = ? AND username = ?",
-        payload.network_id,
-        payload.new_admin
-    )
-    .fetch_optional(&db)
-    .await?;
+    let new_admin =
+        sqlx::query("SELECT 1 AS exists_flag FROM networks WHERE network_id = ? AND username = ?")
+            .bind(&payload.network_id)
+            .bind(&payload.new_admin)
+            .fetch_optional(&db)
+            .await?;
     if new_admin.is_none() {
         return Err(AppError::Conflict);
     }
-    sqlx::query!(
-        "UPDATE networks SET is_admin = ? WHERE network_id = ? AND username = ?",
-        1,
-        payload.network_id,
-        payload.new_admin
-    )
-    .execute(&db)
-    .await?;
+    sqlx::query("UPDATE networks SET is_admin = ? WHERE network_id = ? AND username = ?")
+        .bind(&1)
+        .bind(&payload.network_id)
+        .bind(&payload.new_admin)
+        .execute(&db)
+        .await?;
     Ok(StatusCode::ACCEPTED)
 }
 
@@ -163,28 +154,28 @@ pub async fn add_network_to_user(
     claims: Claims,
     Json(payload): Json<Network>,
 ) -> Result<StatusCode, AppError> {
-    let existing = sqlx::query!(
-        "SELECT 1 AS exists_flag FROM networks WHERE network_id = ? AND username = ?",
-        payload.network_id,
-        claims.username
-    )
-    .fetch_optional(&db)
-    .await?;
+    let existing =
+        sqlx::query("SELECT 1 AS exists_flag FROM networks WHERE network_id = ? AND username = ?")
+            .bind(&payload.network_id)
+            .bind(&claims.username)
+            .fetch_optional(&db)
+            .await?;
     if existing.is_none() {
         return Err(AppError::Conflict);
     }
-    let Some(username) = sqlx::query_scalar!(
+    let Some(username) = sqlx::query_scalar::<_, String>(
         "SELECT username FROM networks WHERE network_id = ? AND is_admin = ?",
-        payload.network_id,
-        1
     )
+    .bind(&payload.network_id)
+    .bind(&1)
     .fetch_optional(&db)
     .await?
     else {
         return Err(AppError::Conflict);
     };
     let _email: String =
-        sqlx::query_scalar!("SELECT email FROM users WHERE username = ?", username)
+        sqlx::query_scalar::<_, String>("SELECT email FROM users WHERE username = ?")
+            .bind(&username)
             .fetch_one(&db)
             .await?;
     return Ok(StatusCode::ACCEPTED);
@@ -197,23 +188,20 @@ pub async fn get_devices(
     Json(network_id): Json<String>,
 ) -> Result<Json<Vec<NetworkDevice>>, AppError> {
     println!("--> [GET] /api/devices (Zero-allocation read)");
-    let existing = sqlx::query!(
-        "SELECT 1 AS exists_flag FROM networks WHERE network_id = ? AND username = ?",
-        network_id,
-        claims.username
-    )
-    .fetch_optional(&db)
-    .await?;
+    let existing =
+        sqlx::query("SELECT 1 AS exists_flag FROM networks WHERE network_id = ? AND username = ?")
+            .bind(&network_id)
+            .bind(&claims.username)
+            .fetch_optional(&db)
+            .await?;
     if existing.is_none() {
         return Err(AppError::Conflict);
     }
-    let devices: Vec<NetworkDevice> = sqlx::query_as!(
-        NetworkDevice,
-        "SELECT * FROM devices WHERE network_id = ?",
-        network_id
-    )
-    .fetch_all(&db)
-    .await?;
+    let devices: Vec<NetworkDevice> =
+        sqlx::query_as::<_, NetworkDevice>("SELECT * FROM devices WHERE network_id = ?")
+            .bind(&network_id)
+            .fetch_all(&db)
+            .await?;
     Ok(Json(devices))
 }
 
@@ -223,24 +211,21 @@ pub async fn get_single_device(
     claims: Claims,
     Json(payload): Json<NormalRequest>,
 ) -> Result<Json<NetworkDevice>, AppError> {
-    let existing = sqlx::query!(
-        "SELECT 1 AS exists_flag FROM networks WHERE network_id = ? AND username = ?",
-        payload.network_id,
-        claims.username
-    )
-    .fetch_optional(&db)
-    .await?;
+    let existing =
+        sqlx::query("SELECT 1 AS exists_flag FROM networks WHERE network_id = ? AND username = ?")
+            .bind(&payload.network_id)
+            .bind(&claims.username)
+            .fetch_optional(&db)
+            .await?;
     if existing.is_none() {
         return Err(AppError::Conflict);
     }
-    if let Some(device) = sqlx::query_as!(
-        NetworkDevice,
-        "SELECT * FROM devices WHERE mac = ? AND network_id = ?",
-        payload.mac,
-        payload.network_id
-    )
-    .fetch_optional(&db)
-    .await?
+    if let Some(device) =
+        sqlx::query_as::<_, NetworkDevice>("SELECT * FROM devices WHERE mac = ? AND network_id = ?")
+            .bind(&payload.mac)
+            .bind(&payload.network_id)
+            .fetch_optional(&db)
+            .await?
     {
         println!("SUCCESS: Device {} is found.", device.hostname);
         return Ok(Json(device));
@@ -257,37 +242,32 @@ pub async fn delete_device(
 ) -> Result<Json<Vec<NetworkDevice>>, AppError> {
     crate::dashboard::authorize(&db, &claims, &payload.network_id, true).await?;
     println!("--> [Delete] /api/devices - Targeting Mac: {}", payload.mac);
-    let existing = sqlx::query!(
-        "SELECT 1 AS exists_flag FROM networks WHERE network_id = ? AND username = ?",
-        payload.network_id,
-        claims.username
-    )
-    .fetch_optional(&db)
-    .await?;
+    let existing =
+        sqlx::query("SELECT 1 AS exists_flag FROM networks WHERE network_id = ? AND username = ?")
+            .bind(&payload.network_id)
+            .bind(&claims.username)
+            .fetch_optional(&db)
+            .await?;
     if existing.is_none() {
         return Err(AppError::Conflict);
     }
-    let protected: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM devices WHERE network_id=? AND mac=? AND state!='allowed') OR EXISTS(SELECT 1 FROM device_commands WHERE network_id=? AND mac=? AND status IN ('pending','sent'))")
+    let protected: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM devices WHERE network_id=? AND mac=? AND (state!='allowed' OR trusted=1)) OR EXISTS(SELECT 1 FROM device_commands WHERE network_id=? AND mac=? AND status IN ('pending','sent'))")
         .bind(&payload.network_id).bind(&payload.mac).bind(&payload.network_id).bind(&payload.mac).fetch_one(&db).await?;
     if protected {
         return Err(AppError::Conflict);
     }
-    let result = sqlx::query!(
-        "DELETE FROM devices WHERE mac = ? AND network_id = ?",
-        payload.mac,
-        payload.network_id
-    )
-    .execute(&db)
-    .await?;
+    let result = sqlx::query("DELETE FROM devices WHERE mac = ? AND network_id = ?")
+        .bind(&payload.mac)
+        .bind(&payload.network_id)
+        .execute(&db)
+        .await?;
     if result.rows_affected() != 0 {
         println!("SUCCESS: Device {} has been deleted", payload.mac);
-        let devices: Vec<NetworkDevice> = sqlx::query_as!(
-            NetworkDevice,
-            "SELECT * FROM devices WHERE network_id = ?",
-            payload.network_id
-        )
-        .fetch_all(&db)
-        .await?;
+        let devices: Vec<NetworkDevice> =
+            sqlx::query_as::<_, NetworkDevice>("SELECT * FROM devices WHERE network_id = ?")
+                .bind(&payload.network_id)
+                .fetch_all(&db)
+                .await?;
         return Ok(Json(devices));
     }
     println!("WARNING: Could not find device with MAC: {}", payload.mac);

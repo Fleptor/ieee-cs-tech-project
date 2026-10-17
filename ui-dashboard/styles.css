@@ -1207,3 +1207,10 @@ h1 {
     top: 8px;
   }
 }
+
+.engine-actions, .incident-actions {display:flex;flex-wrap:wrap;gap:8px;margin:16px 0;}
+#devices-body td:last-child .button {margin:3px;}
+.incident details {margin:12px 0;color:var(--muted,#aab8c5);}
+
+#operator-activity {max-height: 360px; overflow: auto; padding: 0 24px;}
+#operator-activity .command-row {min-width: 0;}

@@ -31,6 +31,8 @@ table TelemetryReport {
     heuristic_flags_count: uint;
     infra_alert_count: uint;
     port_entropy_score: float;
+    report_id: string; // Durable sensor outbox ID; acknowledged after ingestion.
+    captured_at: long; // UTC epoch seconds; zero for older sensors.
 }
 
 union IncomingPayload {

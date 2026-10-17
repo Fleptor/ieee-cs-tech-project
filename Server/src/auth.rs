@@ -42,9 +42,11 @@ pub async fn verify_user(
     username: &str,
     password: &str,
 ) -> Result<(), AppError> {
-    let existing = sqlx::query_scalar!("SELECT password FROM users WHERE username = ? ", username)
-        .fetch_optional(db)
-        .await?;
+    let existing =
+        sqlx::query_scalar::<_, String>("SELECT password FROM users WHERE username = ? ")
+            .bind(&username)
+            .fetch_optional(db)
+            .await?;
     if let Some(hash_password) = existing {
         if verify_password(password, &hash_password) {
             return Ok(());
@@ -156,4 +158,16 @@ where
             }
         }
     }
+}
+
+// Active operator sessions refresh before expiration, including long booth days.
+pub async fn refresh_session(
+    axum::extract::State(db): axum::extract::State<SharedDatabase>,
+    claims: Claims,
+) -> Result<String, AppError> {
+    let email: Option<String> = sqlx::query_scalar("SELECT email FROM users WHERE username=?")
+        .bind(&claims.username)
+        .fetch_optional(&db)
+        .await?;
+    create_jwt(&claims.username, &email.ok_or(AppError::Unauthorized)?)
 }

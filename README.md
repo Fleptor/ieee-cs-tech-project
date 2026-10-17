@@ -2,77 +2,99 @@
 
 The Four Horsemen / IEEE Computer Society network detection and response prototype.
 
-CIPHER collects eBPF/XDP metadata with a Rust edge daemon, sends FlatBuffers reports over a TLS WebSocket, and analyzes them in a Rust/Axum control plane. The static operator console is served by that same server.
+CIPHER collects eBPF/XDP metadata with a Rust sensor, sends acknowledged FlatBuffers reports over a TLS WebSocket, and analyzes them in a Rust/Axum control plane. The server also serves the operator dashboard.
 
-## Run locally
+## Start here
+
+- [Booth setup, provider configuration, scenario hooks and recovery](docs/BOOTH_RUNBOOK.md)
+- [Readiness audit, delivered features and remaining limits](docs/BOOTH_READINESS.md)
+- [Earlier dashboard integration review](docs/UI_INTEGRATION.md)
 
 From the repository root:
 
 ```sh
-make ebpf
-cargo build --workspace
-./scripts/run-server.sh
+bash setup.sh --demo
+python3 scripts/booth.py start
 ```
 
-Open **https://localhost:3000**. The startup script creates a development certificate in `.local/`; your browser must trust that certificate (or accept it for this local development site). It does not replace the team's existing certificates. The server binds to localhost by default.
-
-In a second terminal, start the sensor:
+Open **https://localhost:3100**. The terminal gives the path to the disposable operator credentials. This is a **labeled simulation** with an offline deterministic supervisor fixture, not an AI model. The real backend performs statistical analysis, persists incidents, and delivers commands to the simulated sensor. In another terminal:
 
 ```sh
-sudo ./scripts/run-daemon.sh
+python3 scripts/booth.py hook scan
+python3 scripts/booth.py hook trust
+python3 scripts/booth.py hook enforce
+python3 scripts/booth.py hook scan
+python3 scripts/booth.py hook reset
 ```
 
-The daemon requires BPF/network privileges. Its default interface is `enp7s0`; select another with `sudo env CIPHER_INTERFACE=YOUR_INTERFACE ./scripts/run-daemon.sh`. Run the server first. Ctrl-C stops the daemon and detaches its XDP link.
+Use `start --llm configured` for real provider calls using `.local/cipher.env`, or `start --llm off` to show statistical alerts without a supervisor. Each start creates a separate session/database on local temporary storage. Ctrl-C stops its processes. Neither scenario runner nor fixture blocks real packets.
 
-Both components load the repository `.env`. They must share `ROUTER_SECRET`; the server also needs `JWT_SECRET`. Do not expose either secret to the browser. For another machine, configure `CIPHER_SERVER_URL` and `CIPHER_CA_CERT` on the daemon. Certificate and hostname validation are enabled.
+## Live sensor
 
-On a fresh database, choose **Sign in → Create an account**. The first account becomes administrator of `CIPHER_NETWORK_ID` (default `NET_123`). Later accounts require explicit network assignment. No sample accounts, devices, traffic, or threat indicators are created.
+```sh
+bash setup.sh
+./scripts/run-server.sh
+# In a second terminal, choose the interface on your isolated test network:
+sudo env CIPHER_INTERFACE=YOUR_INTERFACE ./scripts/run-daemon.sh
+```
 
-## Operator console
+Open **https://localhost:3000** and create the first operator account. That account becomes administrator of `CIPHER_NETWORK_ID`. Runtime credentials, certificates, databases and logs are stored locally and excluded from Git. New setup creates random secrets in `.local/cipher.env`; it does not import the previously tracked development credentials. SQLx no longer requires a database at build time.
 
-- **Overview:** observed devices, reported payload/drop counts, traffic history, recent findings and responses.
-- **Devices:** search, state filters, CSV export, and isolate/restore requests. Only administrators may request state changes.
-- **Incidents:** persisted statistical alerts, supervisor reviews, and local edge isolation events.
-- **Threat intelligence:** explicitly configured indicators, never generated examples.
-- **Engine health:** sensor heartbeat, reported XDP attachment, interface, telemetry freshness, baseline progress and supervisor configuration.
+The server binds to localhost by default. The daemon verifies the TLS certificate. See the runbook for another-machine configuration and trust setup.
 
-The browser reads an authenticated snapshot every three seconds. The sensor reports every ten seconds. Device state changes only after an acknowledgment from the daemon; pending, sent, applied, failed, and superseded requests remain visible. Pending requests replay when the sensor reconnects. A map acknowledgment establishes that the map operation succeeded; packet-level enforcement still requires a hardware test.
+## Operator controls
+
+- **Devices:** permanently trust/revoke trust, manually isolate/restore, reset a saved baseline, and export the inventory.
+- **Trust:** retain monitoring and alerts while exempting a device from automatic cloud and edge isolation. Trust also queues restoration of an existing MAC block. Explicit manual isolation remains possible.
+- **Engine health:** switch between monitor/alert and automatic isolation, inspect policy acknowledgment, inspect provider errors and successful review time, test the LLM connection, and export retained telemetry.
+- **Incidents:** detection evidence, supervisor status, response reason, and resolve/false-positive/reopen controls.
+- **Operator activity:** persisted policy changes and incident reviews.
+- **Recovery:** saved baselines, persistent trust/local blocks, reconnecting sensor, bounded telemetry outbox, acknowledgments, deduplicated delivery retries, and command retries with visible failure states.
+
+Monitor/alert is the default response policy. It controls **automatic device isolation**; existing blocks and kernel packet-level filters remain active. Cloud auto-isolation requires enforcement mode, an untrusted device, an open incident, an unchanged policy revision, at least two statistical signals, and a supervisor recommendation with confidence at least 85/100. Model confidence is self-reported and is not a measured probability.
 
 ## Configuration
 
-| Variable | Purpose / default |
-| --- | --- |
-| `CIPHER_NETWORK_ID` | Sensor network and first-account assignment; `NET_123` |
-| `CIPHER_INTERFACE` | Sensor interface; `enp7s0` |
-| `CIPHER_BIND` | Server listen address; `127.0.0.1:3000` |
-| `CIPHER_DB` | Server SQLite file; `cipher.db` relative to server working directory |
-| `CIPHER_SERVER_URL` | Daemon server; `wss://localhost:3000` |
-| `CIPHER_TLS_CERT`, `CIPHER_TLS_KEY` | Server certificate paths; set by startup script |
-| `CIPHER_CA_CERT` | Daemon trust certificate; set by startup script |
-| `CIPHER_THREAT_INTEL_FILE` | Optional JSON file with `banned_ips` and `ad_domains` arrays; defaults empty |
-| `LLM_API_KEY`, `LLM_MODEL` | Optional supervisor credentials/model; not needed for dashboard or statistical screening |
+Edit `.local/cipher.env`; restart both components after changing their environment settings. External environment variables override that file.
 
-The existing SQLx compile-time queries require `DATABASE_URL` pointing to a SQLite database containing the original schema. The repository's current development configuration provides that database.
+| Variable | Purpose |
+| --- | --- |
+| `CIPHER_NETWORK_ID` | Sensor network / first-account assignment; default `NET_123` |
+| `CIPHER_INTERFACE` | Sensor interface; default `enp7s0` |
+| `CIPHER_ENV_FILE` | Explicit environment file; set by startup scripts |
+| `CIPHER_BIND` | Server address; default `127.0.0.1:3000` |
+| `CIPHER_DB`, `CIPHER_ROUTER_DB` | Database paths; startup scripts use `.local/` |
+| `CIPHER_SERVER_URL` | Sensor's server, e.g. `wss://localhost:3000` |
+| `CIPHER_TLS_CERT`, `CIPHER_TLS_KEY`, `CIPHER_CA_CERT` | TLS server certificate, private key, and sensor trust certificate |
+| `CIPHER_THREAT_INTEL_FILE` | Optional JSON with `banned_ips` and `ad_domains`; empty by default |
+| `LLM_PROVIDER` | `anthropic` or `openai` (Chat Completions compatible) |
+| `LLM_MODEL`, `LLM_API_KEY` | Explicit model ID and provider key; optional for statistical screening |
+| `LLM_BASE_URL` | Provider `/v1` base URL; HTTPS required except loopback |
+| `LLM_TOKEN_PARAMETER` | `max_completion_tokens` by default; `max_tokens` for compatible servers that require it |
+| `LLM_TIMEOUT_SECONDS` | Provider deadline, default 20 seconds |
+| `CIPHER_ALERT_COOLDOWN_SECONDS` | Per-device alert/review cooldown, default 120 seconds |
 
 ## Verify
 
 ```sh
 make ebpf
-cargo build --workspace
+cargo build --workspace --locked
 cargo test --workspace
-python tests/integration.py
+cargo test -p daemon transport_reconnects -- --ignored
+python3 tests/integration.py
+python3 tests/supervisor.py
 node --check ui-dashboard/app.js
 ```
 
-The integration test starts an isolated HTTPS server on port 3001 with a temporary database. It exercises authentication, bootstrap, network authorization, real FlatBuffers ingestion over WebSocket, command acknowledgments, failures and reconnect replay. It requires `flatc` but no Python packages. `--serve` retains that disposable server for browser checks until Ctrl-C.
+The transport test requires the built backend and OpenSSL. It restarts a real local TLS server and verifies that the daemon transport replays its durable outbox. Python checks use isolated databases and local provider fixtures; they make no paid calls. FlatBuffers Rust bindings were generated with **flatc 25.12.19**, matching the pinned runtime. Use that compiler version if regenerating with `make flatbuffers`.
 
 ## Current limits
 
-- XDP attachment and actual packet blocking need privileged hardware validation. The default single-interface mapping observes ingress as WAN traffic; a two-interface gateway configuration and bidirectional attribution remain separate engine work.
-- Fast-path sampling and early kernel drops mean telemetry is not a full wire-rate packet counter. The UI labels metrics as observations and does not invent throughput or bypass percentages.
-- Telemetry is retained for 24 hours; the console shows at most 5,000 reports from the last hour. Audit and response histories show the latest 100 entries.
-- The daemon exits and detaches on cloud disconnection; restart it to reconnect. Durable command replay is implemented, but automatic sensor reconnect and full offline telemetry recovery still need work.
-- Hostnames, manufacturers and internal IP addresses are unavailable unless a sensor registration supplies them. The UI shows missing values explicitly.
-- Statistical baselines are in memory and need 50 reports per device after reconnection. Supervisor responses and detection accuracy have not been validated against real attacks.
-
-See [the integration review](docs/UI_INTEGRATION.md) for implementation details and the reviewed project material.
+- Real XDP attachment and packet blocking still require a privileged hardware rehearsal. A daemon map acknowledgment proves the map update, not packet-level enforcement.
+- The default mapping uses one interface and observes ingress as WAN traffic. Bidirectional gateway attribution remains incomplete.
+- Counters represent sampled packet observations and payload bytes, not complete connection counts or throughput. Existing protocol/IP/domain filters can drop individual packets even in monitor mode or for a trusted device.
+- Detection uses four statistical features and 50 representative training reports. Accuracy has not been established against real attacks; no accuracy claims are made.
+- Live provider credentials and account/model availability must be checked with **Test LLM connection** before the booth.
+- Telemetry retention is 24 hours; dashboard history is capped at 5,000 reports and export at 10,000. The sensor outbox retains at most 10,000 reports, dropping the oldest with a log message if full.
+- Report retries are deduplicated after successful ingestion. A process crash between ingest and receipt persistence can still duplicate a report. Historical reports older than 60 seconds are stored without driving current isolation decisions.
+- Router authentication still uses a shared secret. Per-sensor credentials, broader rate limiting, model evaluation, and authenticated device identity beyond MAC addresses remain future work.

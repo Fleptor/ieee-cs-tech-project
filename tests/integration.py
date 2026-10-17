@@ -4,7 +4,7 @@ Build first: cargo build --workspace. Requires Python 3 and flatc, no pip packag
 --serve keeps the isolated test server running for browser checks on port 3001.
 No test data is written to the working installation.
 """
-import argparse, base64, json, os, pathlib, socket, sqlite3, ssl, struct, subprocess, tempfile, time, urllib.request, urllib.error
+import argparse, base64, hashlib, hmac, json, os, pathlib, socket, sqlite3, ssl, struct, subprocess, tempfile, time, urllib.request, urllib.error
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 CTX = ssl._create_unverified_context()  # Only the disposable localhost test server.
 BASE = 'https://localhost:3001'
@@ -49,7 +49,11 @@ class Sensor:
         if size==126: size=struct.unpack('!H',self.read(2))[0]
         if size==127: size=struct.unpack('!Q',self.read(8))[0]
         data=self.read(size)
-        return json.loads(data) if opcode&15==1 else data
+        result=json.loads(data) if opcode&15==1 else data
+        if isinstance(result,dict) and result.get('type')=='policy':
+            self.send({'type':'policy_ack','revision':result['revision'],'applied':True})
+            return self.receive()
+        return result
     def close(self): self.sock.close()
 
 def eventually(check):
@@ -64,7 +68,9 @@ def main():
     with tempfile.TemporaryDirectory(prefix='cipher-integration-') as tmp:
         tmp=pathlib.Path(tmp)
         env=dict(os.environ,CIPHER_DB=str(tmp/'test.db'),CIPHER_BIND='127.0.0.1:3001',JWT_SECRET='isolated-test-jwt-secret-32-bytes-long',ROUTER_SECRET='isolated-test-router-key',CIPHER_NETWORK_ID='NET_123')
-        env.pop('LLM_API_KEY',None);env.pop('CIPHER_THREAT_INTEL_FILE',None)
+        env.update(CIPHER_ENV_FILE=str(tmp/'no-env'),LLM_API_KEY='',LLM_MODEL='',CIPHER_TLS_CERT=str(tmp/'cert.pem'),CIPHER_TLS_KEY=str(tmp/'key.pem'))
+        env.pop('CIPHER_THREAT_INTEL_FILE',None)
+        subprocess.run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-days','1','-keyout',str(tmp/'key.pem'),'-out',str(tmp/'cert.pem'),'-subj','/CN=localhost','-addext','subjectAltName=DNS:localhost,IP:127.0.0.1'],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         with (tmp/'server.log').open('w') as log:
             process=subprocess.Popen([str(ROOT/'target/debug/cipher_backend')],cwd=ROOT/'Server',env=env,stdout=log,stderr=log)
             try:
@@ -82,6 +88,15 @@ def main():
                 api('/api/dashboard/NET_123',token=other,expected=401)
                 email_token=api('/api/Main/login',dict(account,username=''))
                 assert api('/api/networks',token=email_token)['username']=='test-operator'
+                header,body,_=token.split('.')
+                claims=json.loads(base64.urlsafe_b64decode(body+'='*(-len(body)%4)))
+                claims['exp']=int(time.time())+60
+                body=base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip('=')
+                message=header+'.'+body
+                signature=base64.urlsafe_b64encode(hmac.new(env['JWT_SECRET'].encode(),message.encode(),hashlib.sha256).digest()).decode().rstrip('=')
+                refreshed=api('/api/session/refresh',{},token=message+'.'+signature)
+                refreshed_body=refreshed.split('.')[1]
+                assert json.loads(base64.urlsafe_b64decode(refreshed_body+'='*(-len(refreshed_body)%4)))['exp']>claims['exp']
                 snap=lambda:api('/api/dashboard/NET_123',token=token)
                 assert snap()['devices']==[] and snap()['telemetry']==[] and not snap()['sensor_online']
                 sensor=Sensor(env['ROUTER_SECRET'])
@@ -121,12 +136,37 @@ def main():
                 eventually(lambda:len(snap()['incidents'])==1)
                 assert snap()['incidents'][0]['threat_name']=='Statistical anomaly'
                 assert snap()['devices'][0]['state']=='allowed'
+                assert snap()['policy']['mode']=='observe'
+                trust={'network_id':'NET_123','mac':command['mac'],'trusted':True}
+                api('/api/device/trust',trust,token=other,expected=401)
+                api('/api/device/trust',trust,token=token)
+                wire=sensor.receive();assert wire['state']=='allowed'
+                sensor.send({'type':'command_ack','id':wire['id'],'applied':True})
+                eventually(lambda:snap()['devices'][0]['trusted'])
+                incident=snap()['incidents'][0]
+                api('/api/incidents/review',{'network_id':'NET_123','id':incident['id'],'disposition':'false_positive','note':'Integration review'},token=token)
+                assert snap()['incidents'][0]['disposition']=='false_positive'
+                exported=api('/api/telemetry/NET_123',token=token)
+                assert len(exported['reports'])>=50
+                api('/api/policy',{'network_id':'NET_123','mode':'invalid'},token=token,expected=409)
+                api('/api/policy',{'network_id':'NET_123','mode':'enforce'},token=token)
+                assert snap()['policy']['mode']=='enforce'
+                api('/api/device/baseline/reset',{'network_id':'NET_123','mac':command['mac']},token=token)
+                assert snap()['baselines']==[]
                 # A same-network viewer can inspect data but cannot enforce policy.
                 with sqlite3.connect(tmp/'test.db') as db:
                     db.execute("INSERT INTO networks VALUES ('NET_123','outsider',0)")
                 assert api('/api/dashboard/NET_123',token=other)['devices']
                 api('/api/change_state',command,token=other,expected=401)
+                api('/api/device/trust',trust,token=other,expected=401)
+                api('/api/policy',{'network_id':'NET_123','mode':'observe'},token=other,expected=401)
                 sensor.close();eventually(lambda:not snap()['sensor_online'])
+                process.terminate();process.wait(timeout=5)
+                process=subprocess.Popen([str(ROOT/'target/debug/cipher_backend')],cwd=ROOT/'Server',env=env,stdout=log,stderr=log)
+                for _ in range(100):
+                    try:api('/api/health');break
+                    except (OSError,urllib.error.URLError):time.sleep(.1)
+                assert snap()['devices'][0]['trusted'] and snap()['policy']['mode']=='enforce'
                 print('PASS: authentication, bootstrap, membership, canonical email login, network-scoped FlatBuffers telemetry, device discovery, pending/applied/failed commands, disconnect, replay, baseline alert persistence and viewer permissions.',flush=True)
                 if args.serve:
                     print('Isolated browser fixture ready at https://localhost:3001 (test-operator / test-password-123). Ctrl-C removes the entire fixture.',flush=True)

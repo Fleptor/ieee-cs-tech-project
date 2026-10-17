@@ -7,7 +7,7 @@ edition = "2024"
 anyhow = "1.0.103"
 aya = "0.14.0"
 sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite", "macros"] }
-flatbuffers = "2.0.8"
+flatbuffers = "=25.12.19"
 futures-util = "0.3.32"
 hyperloglog = "1.0.3"
 libc = "0.2.186"
