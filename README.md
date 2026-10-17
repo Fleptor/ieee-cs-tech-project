@@ -6,18 +6,28 @@ CIPHER collects eBPF/XDP metadata with a Rust sensor, sends acknowledged FlatBuf
 
 ## Start here
 
-- [Booth setup, provider configuration, scenario hooks and recovery](docs/BOOTH_RUNBOOK.md)
+- [Presenter guide: what to show, three-minute flow and fallback](docs/DEMO_GUIDE.md)
+- [LLM setup: Anthropic, OpenAI-compatible endpoints and verification](docs/LLM_SETUP.md)
+- [Booth and physical-sensor setup, scenario hooks and recovery](docs/BOOTH_RUNBOOK.md)
 - [Readiness audit, delivered features and remaining limits](docs/BOOTH_READINESS.md)
+- [Updated Startup Alley slides](docs/presentation/README.md)
 - [Earlier dashboard integration review](docs/UI_INTEGRATION.md)
 
 From the repository root:
 
 ```sh
 bash setup.sh --demo
+python3 scripts/booth.py doctor
 python3 scripts/booth.py start
 ```
 
 Open **https://localhost:3100**. The terminal gives the path to the disposable operator credentials. This is a **labeled simulation** with an offline deterministic supervisor fixture, not an AI model. The real backend performs statistical analysis, persists incidents, and delivers commands to the simulated sensor. In another terminal:
+
+```sh
+python3 scripts/booth.py rehearse
+```
+
+The rehearsal checks the complete flow, saves a JSON report in the session directory, and restores the next-visitor state. Then run individual scenarios:
 
 ```sh
 python3 scripts/booth.py hook scan

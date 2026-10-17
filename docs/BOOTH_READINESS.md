@@ -12,7 +12,7 @@ This review prioritizes failure modes that can interrupt a CIPHER demonstration 
 | Cloud disconnect stopped the sensor | Reconnecting transport; collection and kernel watchdog continue; bounded durable outbox; server acknowledgments and retry deduplication | Physical gateway outage rehearsal |
 | Blocks/policy disappeared with the daemon's memory | Policy cache and local MAC-block persistence; cloud command replay; visible acknowledgment and retry failures | Actual map enforcement after hardware restart |
 | No operator incident workflow | Resolve, false-positive, reopen, evidence display and operator audit | Feedback is recorded; it does not automatically retrain a model |
-| No repeatable booth stories | Isolated runner; labeled simulation; benign download, scan, upload, trust, outage, failure, reset, and export hooks | Rehearse narration and backup video |
+| No repeatable booth stories | Isolated runner; labeled simulation; benign download, scan, upload, trust, outage, failure, reset, and export hooks | Presenter guide, complete-flow rehearsal and recorded software walkthrough; still rehearse on the event laptop |
 | Dashboard session could expire mid-event | Authenticated session refresh before expiry while dashboard is active | An expired unattended session still requires sign-in |
 | Runtime credentials and databases were tracked | Removed from the current Git tree; ignored runtime paths; fresh-secret initializer; database-free builds | Rotate old credentials; historical commits still contain previously tracked material |
 
@@ -37,3 +37,15 @@ Implementation uses the documented [Anthropic Messages API](https://platform.cla
 The workspace builds and Rust tests pass. The explicit transport integration test passes against a real TLS backend restart. HTTPS/WebSocket integration checks cover authorization, durable trust/policy, session refresh, command acknowledgments/failures/replay and incident review. Both provider adapters pass local fixture checks for success, timeout, HTTP 503, malformed output, cooldowns, historical-report suppression, delivery deduplication, trust granted during a review, and restart persistence. The simulator also survives idle gaps between visitors.
 
 Browser checks exercised trust/revoke, manual isolation/restoration with acknowledgments, response-mode changes, incident review, LLM connection testing, and desktop/mobile layout. eBPF compilation passes. Live provider calls and privileged packet enforcement were not performed.
+
+## Demo preparation follow-up — 17 October 2026
+
+The offline demonstration is the supported booth path. See [DEMO_GUIDE.md](DEMO_GUIDE.md) for the show/explain/defer matrix and presentation script, and [LLM_SETUP.md](LLM_SETUP.md) for the separate live-provider setup steps.
+
+The scenario controller now renews its own operator session, emits normal observations between visitors, waits for actual review/response completion, and provides `doctor` and `rehearse` commands. Missing live-model configuration fails with an actionable message. The scripted upload verdict now describes outbound activity rather than a scan. Booth sessions use an empty intelligence file instead of inheriting live indicators.
+
+Browser rehearsal found and fixed evidence panels collapsing on dashboard refresh, and a 12-second browser timeout that was shorter than the possible supervisor timeout. The connection test now allows 66 seconds, stays disabled while pending across refreshes, and explains the five-second check throttle. Simulation labels explicitly distinguish scripted supervisor scores from real model confidence.
+
+The updated deck and speaker notes reflect delivered controls and keep hardware, live-model and accuracy claims conditional. An offline MP4 records the real dashboard against the simulated sensor/fixture; it is not evidence of packet enforcement. Original workspace slides were preserved locally before replacement.
+
+The complete fixture rehearsal verifies 17 checks and leaves monitoring/allowed access ready for the next visitor. API and provider tests, Rust tests, actual daemon TLS reconnect/outbox testing, eBPF compilation, desktop/mobile browser checks and PDF rendering pass. No live provider credentials or physical gateway were available in this preparation; neither is described as verified.

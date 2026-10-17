@@ -6,6 +6,7 @@ import socket
 import ssl
 import struct
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -15,6 +16,13 @@ class Client:
         self.base=base.rstrip('/')
         self.context=ssl.create_default_context(cafile=str(cert))
         self.token=None
+    def refresh_session(self):
+        """Keep an unattended booth operator usable across the two-hour JWT lifetime."""
+        if not self.token:return
+        body=self.token.split('.')[1]
+        expires=json.loads(base64.urlsafe_b64decode(body+'='*(-len(body)%4)))['exp']
+        if expires-time.time()<900:
+            self.token=self.api('/api/session/refresh',{})
     def api(self,path,body=None,method=None):
         headers={'Content-Type':'application/json'}
         if self.token: headers['Authorization']='Bearer '+self.token

@@ -20,6 +20,7 @@ const state = {
   action: null,
   stale: false,
   networksLoaded: false,
+  checkingLlm: false,
 };
 const views = {
   overview: [
@@ -91,7 +92,7 @@ async function api(path, method = "GET", body, token = state.token) {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-    signal: AbortSignal.timeout(12000),
+    signal: AbortSignal.timeout(path === "/api/supervisor/check" ? 66000 : 12000),
     cache: "no-store",
   });
   if (!response.ok) {
@@ -99,7 +100,7 @@ async function api(path, method = "GET", body, token = state.token) {
       response.status === 401
         ? "Your session expired or access was denied. Sign in to continue."
         : response.status === 409
-          ? "The request conflicts with existing data. Check the details and try again."
+          ? path === "/api/supervisor/check" ? "Supervisor busy or checked recently. Wait five seconds and try again." : "The request conflicts with existing data. Check the details and try again."
           : response.status === 404
             ? "This device or endpoint is no longer available."
             : `The server could not complete the request (${response.status}).`;
@@ -251,7 +252,9 @@ async function refresh() {
         "Your edge daemon is reporting. Device activity will appear after the first telemetry report.",
       );
     else if (data.demo_mode || data.sensor?.simulated)
-      notice("Booth simulation", "Scenario telemetry and sensor acknowledgments are simulated. Statistical analysis and configured supervisor calls run through the real server.");
+      notice("Booth simulation", data.supervisor?.model === "booth-fixture"
+        ? "Simulated traffic and sensor acknowledgments. The supervisor is a scripted offline fixture, not an AI model. Detection, storage and operator controls run through the real server."
+        : "Simulated traffic and sensor acknowledgments. Detection, storage and operator controls run through the real server. " + (data.supervisor?.configured ? "The configured LLM reviews the synthetic evidence." : "No LLM is configured; statistical alerts remain available."));
     else $("notice").hidden = true;
     $("last-updated").textContent =
       `Updated ${date(data.server_time)} · refreshes every 3s`;
@@ -393,7 +396,7 @@ function renderHealth() {
     ["Edge daemon", online ? "Heartbeat received" : "No recent heartbeat"],
     [
       "XDP program",
-      online && d?.sensor?.xdp_attached
+      d?.sensor?.simulated ? "Simulated sensor · no XDP attachment" : online && d?.sensor?.xdp_attached
         ? "Attached (daemon reported)"
         : "Not verified",
     ],
@@ -417,7 +420,7 @@ function renderHealth() {
         ? `${fmt(d.telemetry.length)} reports · last hour · up to ${fmt(d.telemetry_limit)}`
         : "None",
     ],
-    ["Supervisor provider", `${d?.supervisor?.provider || "—"} / ${d?.supervisor?.model || "Model not set"}`],
+    ["Supervisor provider", d?.demo_mode && d?.supervisor?.model === "booth-fixture" ? "Offline scripted fixture · not AI" : `${d?.supervisor?.provider || "—"} / ${d?.supervisor?.model || "Model not set"}`],
     ["Response policy", d?.policy?.mode === "enforce" ? "Automatic isolation enabled" : "Monitor and alert"],
     ["Policy delivery", !online ? "Sensor offline" : d?.sensor?.policy_revision === d?.policy?.revision ? "Acknowledged by sensor" : "Waiting for sensor acknowledgment"],
     ["Trusted devices", String(d?.devices?.filter(v => v.trusted).length || 0)],
@@ -431,7 +434,7 @@ function renderHealth() {
     )
     .join("");
   const admin = state.networks.find(n => n.network_id === state.network)?.is_admin;
-  $("engine-actions").innerHTML = `<button class="button secondary" data-policy="${d?.policy?.mode === "enforce" ? "observe" : "enforce"}" ${!admin || state.stale ? "disabled" : ""}>${d?.policy?.mode === "enforce" ? "Switch to monitor and alert" : "Enable automatic isolation"}</button><button class="button secondary" data-check-llm ${!admin || state.stale ? "disabled" : ""}>Test LLM connection</button><button class="button secondary" data-export-telemetry ${!d ? "disabled" : ""}>Export telemetry</button>`;
+  $("engine-actions").innerHTML = `<button class="button secondary" data-policy="${d?.policy?.mode === "enforce" ? "observe" : "enforce"}" ${!admin || state.stale ? "disabled" : ""}>${d?.policy?.mode === "enforce" ? "Switch to monitor and alert" : "Enable automatic isolation"}</button><button class="button secondary" data-check-llm ${!admin || state.stale || state.checkingLlm ? "disabled" : ""}>${state.checkingLlm ? "Checking supervisor…" : "Test LLM connection"}</button><button class="button secondary" data-export-telemetry ${!d ? "disabled" : ""}>Export telemetry</button>`;
   $("operator-activity").innerHTML = (d?.activity || []).slice(0, 15).map(a => `<div class="command-row"><div>${escapeHtml(a.actor)} · ${escapeHtml(a.action.replaceAll("_", " "))}<small>${escapeHtml(a.detail)} · ${escapeHtml(date(a.created_at))}</small></div></div>`).join("") || empty("No operator actions", "Policy changes and incident reviews will appear here.");
 }
 function renderDevices() {
@@ -466,9 +469,11 @@ function renderDevices() {
 function incidentMarkup(log) {
   const admin = state.networks.find(n => n.network_id === state.network)?.is_admin;
   const reasons = log.evidence?.measurements?.reasons || [];
-  return `<article class="incident"><div class="incident-top"><h3>${escapeHtml(log.threat_name)}</h3>${badge(log.disposition || "open", log.disposition === "open" ? "learning" : "online")}</div><p>${escapeHtml(log.explanation)}</p><p>Supervisor: ${escapeHtml(log.review_status || "not requested")} · Action: ${escapeHtml((log.action || "alert_only").replaceAll("_", " "))}${log.confidence ? ` · Model confidence: ${log.confidence}/100 (self-reported)` : ""}</p>${reasons.length ? `<details><summary>Detection evidence</summary><ul>${reasons.map(r => `<li>${escapeHtml(r)}</li>`).join("")}</ul></details>` : ""}<div class="incident-meta"><span class="mono">${escapeHtml(log.mac)}</span><time>${escapeHtml(date(log.timestamp))}</time></div>${log.note ? `<p>Review note: ${escapeHtml(log.note)}</p>` : ""}<div class="incident-actions">${["resolved", "false_positive", "open"].filter(v => v !== log.disposition).map(v => `<button class="button small secondary" data-review-id="${log.id}" data-disposition="${v}" ${!admin || state.stale ? "disabled" : ""}>${v === "open" ? "Reopen" : v === "resolved" ? "Resolve" : "Mark false positive"}</button>`).join("")}</div></article>`;
+  return `<article class="incident"><div class="incident-top"><h3>${escapeHtml(log.threat_name)}</h3>${badge(log.disposition || "open", log.disposition === "open" ? "learning" : "online")}</div><p>${escapeHtml(log.explanation)}</p><p>Supervisor: ${escapeHtml(log.review_status || "not requested")} · Action: ${escapeHtml((log.action || "alert_only").replaceAll("_", " "))}${log.confidence ? ` · ${log.threat_name.startsWith("[DEMO]") ? "Fixture score" : "Model confidence"}: ${log.confidence}/100${log.threat_name.startsWith("[DEMO]") ? "" : " (self-reported)"}` : ""}</p>${reasons.length ? `<details data-evidence-id="${log.id}"><summary>Detection evidence</summary><ul>${reasons.map(r => `<li>${escapeHtml(r)}</li>`).join("")}</ul></details>` : ""}<div class="incident-meta"><span class="mono">${escapeHtml(log.mac)}</span><time>${escapeHtml(date(log.timestamp))}</time></div>${log.note ? `<p>Review note: ${escapeHtml(log.note)}</p>` : ""}<div class="incident-actions">${["resolved", "false_positive", "open"].filter(v => v !== log.disposition).map(v => `<button class="button small secondary" data-review-id="${log.id}" data-disposition="${v}" ${!admin || state.stale ? "disabled" : ""}>${v === "open" ? "Reopen" : v === "resolved" ? "Resolve" : "Mark false positive"}</button>`).join("")}</div></article>`;
 }
 function renderIncidents() {
+  const expanded = ["recent-incidents", "incidents-list"].map(id => [id,
+    new Set(Array.from($(id).querySelectorAll("details[open]")).map(el => el.dataset.evidenceId))]);
   const logs = state.data?.incidents || [],
     q = $("incident-search").value.toLowerCase();
   const filtered = logs.filter((l) =>
@@ -491,6 +496,11 @@ function renderIncidents() {
           ? "Try a different search."
           : "An empty history does not verify that the network is threat-free.",
       );
+  for (const [id, ids] of expanded) {
+    $(id).querySelectorAll("details[data-evidence-id]").forEach(el => {
+      el.open = ids.has(el.dataset.evidenceId);
+    });
+  }
 }
 function renderCommands() {
   const commands = state.data?.commands || [];
@@ -650,6 +660,8 @@ document.addEventListener("click", async event => {
     const mode = button.dataset.policy;
     openAction("/api/policy", {network_id: state.network, mode}, "Change automatic response policy?", mode === "enforce" ? "Enable automatic device isolation for untrusted devices. Cloud reviews require at least two statistical signals and model confidence of 85/100. Edge heuristics may also isolate devices. Trusted devices remain monitored and exempt." : "Keep alerts, but stop new automatic device isolation. Existing blocks and packet-level filters remain active; restore blocked devices individually.");
   } else if (button.hasAttribute("data-check-llm")) {
+    if (state.checkingLlm) return;
+    state.checkingLlm = true;
     button.disabled = true;
     toast("Checking the configured supervisor…");
     try {
@@ -657,7 +669,7 @@ document.addEventListener("click", async event => {
       toast(result.ok ? "Supervisor responded with a valid verdict." : result.supervisor.health.last_error || "Supervisor unavailable.");
       await refresh();
     } catch (error) { toast(error.message); }
-    finally { button.disabled = false; }
+    finally { state.checkingLlm = false; renderHealth(); }
   } else if (button.hasAttribute("data-export-telemetry")) {
     try {
       const result = await api(`/api/telemetry/${encodeURIComponent(state.network)}`);

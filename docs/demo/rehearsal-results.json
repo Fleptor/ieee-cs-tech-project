@@ -1,0 +1,76 @@
+{
+  "passed": true,
+  "supervisor": "deterministic fixture, not AI",
+  "sensor": "simulated, no packet blocking",
+  "timestamp": 1792237151,
+  "checks": [
+    {
+      "check": "Baseline ready; monitoring; allowed",
+      "passed": true
+    },
+    {
+      "check": "Supervisor fixture reachable",
+      "passed": true
+    },
+    {
+      "check": "Normal traffic adds no incident",
+      "passed": true
+    },
+    {
+      "check": "Single-feature download stays allowed",
+      "passed": true
+    },
+    {
+      "check": "Scan alert in monitor mode",
+      "passed": true
+    },
+    {
+      "check": "Enforcement waits for simulated acknowledgment",
+      "passed": true
+    },
+    {
+      "check": "Trust preserves alerts and restores access",
+      "passed": true
+    },
+    {
+      "check": "Manual isolation works on trusted device",
+      "passed": true
+    },
+    {
+      "check": "Failed command leaves confirmed state unchanged",
+      "passed": true
+    },
+    {
+      "check": "llm-outage retains alert without isolation",
+      "passed": true
+    },
+    {
+      "check": "malformed-llm retains alert without isolation",
+      "passed": true
+    },
+    {
+      "check": "Upload anomaly and provider recovery",
+      "passed": true
+    },
+    {
+      "check": "Operator review recorded",
+      "passed": true
+    },
+    {
+      "check": "Offline response stays pending",
+      "passed": true
+    },
+    {
+      "check": "Response replays on reconnect",
+      "passed": true
+    },
+    {
+      "check": "Telemetry export contains reports",
+      "passed": true
+    },
+    {
+      "check": "Reset restores next-visitor state",
+      "passed": true
+    }
+  ]
+}

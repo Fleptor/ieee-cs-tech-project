@@ -19,6 +19,7 @@ Previously tracked `.env`, certificate keys and runtime databases are removed fr
 ## 2. Fastest reliable booth rehearsal
 
 ```sh
+python3 scripts/booth.py doctor
 python3 scripts/booth.py start
 ```
 
@@ -26,7 +27,15 @@ Open **https://localhost:3100**. Accept the locally generated development certif
 
 The default supervisor is a deterministic local **fixture**, not a model. The dashboard displays a simulation banner, the sensor reports XDP as unattached, and fixture incident titles/explanations are marked DEMO. Statistical analysis, HTTPS authentication, persistence, command delivery and acknowledgments use the real server. No packets are blocked by this runner.
 
-Use another terminal for hooks:
+Use another terminal to verify the complete offline fixture flow, then run individual hooks:
+
+```sh
+python3 scripts/booth.py rehearse
+```
+
+This saves a JSON report in the session directory and resets to monitoring, untrusted/allowed access and a learned baseline. Open incidents are resolved; history stays available. Hooks wait for completed reviews and sensor acknowledgments. The runner sends normal synthetic reports every five seconds between hooks while allowed (`--no-ambient` disables them), and renews its operator login for long sessions.
+
+Individual hooks:
 
 ```sh
 python3 scripts/booth.py hook normal
@@ -37,32 +46,9 @@ For real LLM calls with simulated traffic, configure section 3 and run `python3 
 
 ## 3. Configure a real LLM
 
-Edit `.local/cipher.env` locally. Keep keys out of Git and the browser. Pick a model ID enabled for your provider account; no default model is assumed.
+Use the separate [LLM setup guide](LLM_SETUP.md) for provider keys, model IDs, endpoint configuration, connection testing and troubleshooting. It covers Anthropic, OpenAI-compatible endpoints, an already installed local model server, and fixture/offline fallback.
 
-Anthropic:
-
-```dotenv
-LLM_PROVIDER=anthropic
-LLM_BASE_URL=https://api.anthropic.com/v1
-LLM_MODEL=YOUR_ENABLED_CLAUDE_MODEL_ID
-LLM_API_KEY=YOUR_ANTHROPIC_API_KEY
-```
-
-OpenAI or a Chat Completions-compatible service:
-
-```dotenv
-LLM_PROVIDER=openai
-LLM_BASE_URL=https://api.openai.com/v1
-LLM_MODEL=YOUR_ENABLED_MODEL_ID
-LLM_API_KEY=YOUR_PROVIDER_API_KEY
-LLM_TOKEN_PARAMETER=max_completion_tokens
-```
-
-For a local compatible server, use its actual `/v1` base URL, e.g. `http://127.0.0.1:11434/v1`, its installed model ID, and a nonempty placeholder API key if it requires no authentication. Some compatible services require `LLM_TOKEN_PARAMETER=max_tokens`. Plain HTTP is accepted only on loopback; other endpoints require HTTPS. This adapter does not install or download a local model.
-
-Restart the server, sign in, open **Engine health → Test LLM connection**. This makes a small real provider request and may incur a charge. Success means the server received a complete, valid verdict. The page exposes missing configuration, connection/timeout/HTTP failures, invalid responses and the last successful review. Keys and provider response bodies are not exposed.
-
-The probe never isolates a device. A failed or busy supervisor leaves a statistical alert for manual review. Only two reviews run concurrently. The default per-device cooldown is 120 seconds. The isolated booth runner uses two seconds to support repeated scenarios.
+Real calls use `python3 scripts/booth.py start --llm configured`. The default booth uses a scripted fixture, not a model. Do not present a configured-but-untested account as verified.
 
 ## 4. Booth stories
 
@@ -98,7 +84,7 @@ Suggested three-minute walkthrough:
 5. `llm-outage`, then `scan`; show graceful fallback.
 6. `reset` before the next visitor.
 
-Use a short recording of the rehearsed flow as an event-day backup. Describe the offline fixture explicitly whenever it is active.
+Keep the [recorded software walkthrough](demo/CIPHER_demo.mp4) and [PDF slides](presentation/CIPHER_Startup_Alley_Pitch.pdf) available as event-day backups. See the [presenter guide](DEMO_GUIDE.md) for narration and what can be claimed. Describe the offline fixture explicitly whenever it is active.
 
 ## 5. Physical test network
 

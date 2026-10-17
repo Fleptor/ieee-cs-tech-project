@@ -19,7 +19,7 @@ class Handler(BaseHTTPRequestHandler):
         reasons=evidence.get('measurements',{}).get('reasons',[])
         values=evidence.get('measurements',{}).get('values',[0,0,0,0])
         suspicious=len(reasons)>=2
-        name='Possible scan activity' if values[3]>4 else 'Unusual outbound activity' if suspicious else 'Unusual traffic volume'
+        name='Unusual outbound activity' if values[1]>1_000_000 else 'Possible scan activity' if values[3]>4 else 'Unusual traffic volume'
         verdict={'threat_name':'[DEMO] '+name,'confidence':95 if suspicious else 40,'human_explanation':'DEMO FIXTURE — deterministic response, not model reasoning. '+('Multiple measurements changed. Investigate the device and destinations.' if suspicious else 'A volume spike alone can be a legitimate download; investigate before isolating.'),'should_block':suspicious}
         content='invalid verdict' if self.mode=='malformed' else json.dumps(verdict)
         result={'content':[{'type':'text','text':content}],'stop_reason':'end_turn'} if self.path.endswith('/messages') else {'choices':[{'message':{'content':content},'finish_reason':'stop'}]}

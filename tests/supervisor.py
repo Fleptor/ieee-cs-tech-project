@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Exercise both provider adapters and response policy against local HTTP fixtures."""
 import json
+import base64
+import hashlib
+import hmac
 import os
 import pathlib
 import subprocess
@@ -40,6 +43,17 @@ def exercise(provider):
                     try:client.api('/api/health');break
                     except Exception:time.sleep(.1)
                 client.token=client.api('/api/Main/signup',{'username':'operator','email':'test@example.invalid','password':'test-password-123'})
+                # The scenario runner also needs renewal when left running all day.
+                header,body,_=client.token.split('.')
+                claims=json.loads(base64.urlsafe_b64decode(body+'='*(-len(body)%4)))
+                claims['exp']=int(time.time())+60
+                body=base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip('=')
+                message=header+'.'+body
+                signature=base64.urlsafe_b64encode(hmac.new(env['JWT_SECRET'].encode(),message.encode(),hashlib.sha256).digest()).decode().rstrip('=')
+                client.token=message+'.'+signature
+                client.refresh_session()
+                renewed=client.token.split('.')[1]
+                assert json.loads(base64.urlsafe_b64decode(renewed+'='*(-len(renewed)%4)))['exp']>claims['exp']
                 booth=Booth(client,'test-router-key',home);booth.warmup()
                 count=len(booth.snapshot()['telemetry'])
                 booth.report(report_id='delivery-retry-test');booth.report(report_id='delivery-retry-test')
