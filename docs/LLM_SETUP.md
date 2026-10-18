@@ -40,7 +40,7 @@ LLM_TIMEOUT_SECONDS=20
 
 For another Chat Completions-compatible endpoint, keep `LLM_PROVIDER=openai` and replace the URL, model and key. The base URL ends in `/v1`; CIPHER appends `/chat/completions`. Some services require `LLM_TOKEN_PARAMETER=max_tokens`.
 
-For an **already installed** local compatible server, a configuration can look like:
+For a local compatible server such as Ollama (installation and model choice are covered in [SETUP.md](SETUP.md#option-a-local-model-with-ollama-recommended-for-the-booth)), a configuration can look like:
 
 ```dotenv
 LLM_PROVIDER=openai
@@ -51,7 +51,7 @@ LLM_TOKEN_PARAMETER=max_tokens
 LLM_TIMEOUT_SECONDS=60
 ```
 
-The placeholder is only for a local endpoint that accepts unauthenticated requests. CIPHER does not install a model or start that server. Plain HTTP is allowed only on loopback; other endpoints require HTTPS. The adapter requires text chat messages and a complete JSON verdict, so provider compatibility still needs testing. Timeout is clamped to 1–60 seconds.
+The placeholder is only for a local endpoint that accepts unauthenticated requests. CIPHER does not install a model or start that server. Plain HTTP is allowed only on loopback; other endpoints require HTTPS. The adapter requires text chat messages and a complete JSON verdict, so provider compatibility still needs testing. A malformed verdict is retried once; timeouts and HTTP errors are not. Timeout is clamped to 1–60 seconds.
 
 Shell environment variables override `.local/cipher.env`. If the dashboard shows an unexpected provider or model, check exported `LLM_*` variables and restart. Do not print API keys while troubleshooting.
 
@@ -64,7 +64,7 @@ python3 scripts/booth.py doctor
 python3 scripts/booth.py start --llm configured
 ```
 
-`doctor` checks local requirements and whether values are set; it makes no provider call. Configured startup stops with an explanation if the server detects missing/invalid configuration. It does not silently substitute the fixture.
+`doctor` checks local requirements and whether values are set; it makes no provider call. For a loopback endpoint it also lists the local server's models and reports whether `LLM_MODEL` is installed. Configured startup stops with an explanation if the server detects missing/invalid configuration. It does not silently substitute the fixture.
 
 Open **https://localhost:3100**. The terminal prints the path to the session's `operator.txt` login. Sign in and open **Engine health → Test LLM connection**. This makes one small real request; success means a complete, valid verdict was received. It does not isolate a device. Wait at least five seconds between connection tests.
 

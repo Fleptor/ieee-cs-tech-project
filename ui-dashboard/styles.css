@@ -1211,6 +1211,8 @@ h1 {
 .engine-actions, .incident-actions {display:flex;flex-wrap:wrap;gap:8px;margin:16px 0;}
 #devices-body td:last-child .button {margin:3px;}
 .incident details {margin:12px 0;color:var(--muted,#aab8c5);}
+.incident p.plain {color:var(--text);border-left:2px solid var(--green);padding-left:10px;}
+.incident p.plain strong {color:var(--green);font-weight:600;}
 
 #operator-activity {max-height: 360px; overflow: auto; padding: 0 24px;}
 #operator-activity .command-row {min-width: 0;}

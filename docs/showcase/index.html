@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>CIPHER Network Defense</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Sora:wght@500;600;700&display=swap">
+<style>
+/* Layout: one narrow reading column; the evidence panel and the gate break out wider, like the dashboard's own cards. */
+:root {
+  /* Dashboard palette (ui-dashboard/styles.css), extended with two surfaces. */
+  --bg: #0c131c;
+  --panel: #111c28;
+  --panel-2: #152231;
+  --line: #23303f;
+  --text: #ecf1f5;
+  --muted: #92a3b4;
+  --green: #8ce8c2;
+  --purple: #a59af5;
+  --amber: #efc47c;
+  --red: #f28e97;
+  --display: "Sora", "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --body: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { background: var(--bg); }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.65 var(--body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+main { max-width: 1040px; margin: 0 auto; padding-block: 56px 72px; display: grid; gap: 88px; }
+h1, h2, h3 { font-family: var(--display); text-wrap: balance; margin: 0; letter-spacing: -0.01em; }
+h1 { font-size: clamp(2.3rem, 6vw, 3.9rem); line-height: 1.05; font-weight: 700; }
+h2 { font-size: clamp(1.5rem, 3.4vw, 2.1rem); line-height: 1.15; font-weight: 600; }
+h3 { font-size: 1.05rem; font-weight: 600; }
+p { margin: 0; }
+a { color: var(--green); text-underline-offset: 3px; }
+a:focus-visible, button:focus-visible, input:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; border-radius: 4px; }
+.eyebrow { font: 500 0.72rem/1.4 var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--green); }
+.lede { color: var(--muted); font-size: 1.12rem; max-width: 60ch; }
+.prose { max-width: 66ch; display: grid; gap: 14px; }
+.section-head { display: grid; gap: 12px; max-width: 70ch; }
+.muted { color: var(--muted); }
+.mono { font-family: var(--mono); }
+
+/* Hero */
+.hero { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: 48px; align-items: center; }
+.hero-copy { display: grid; gap: 22px; }
+.brand { display: flex; align-items: center; gap: 12px; }
+.brand-mark { width: 40px; height: 40px; border: 1.5px solid var(--green); border-radius: 10px; display: grid; place-items: center; font: 700 1.2rem var(--display); color: var(--green); }
+.brand-name { font: 600 1rem/1.2 var(--display); letter-spacing: 0.22em; }
+.brand-sub { font: 400 0.68rem/1.2 var(--mono); letter-spacing: 0.16em; color: var(--muted); text-transform: uppercase; }
+h1 em { font-style: normal; color: var(--green); }
+
+/* Evidence panel: the real numbers from the booth's scan scenario. */
+.evidence { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 22px; display: grid; gap: 16px; min-width: 0; }
+.evidence-top { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.pill { font: 500 0.7rem/1 var(--mono); padding: 6px 9px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
+.pill.amber { color: var(--amber); }
+.pill.green { color: var(--green); }
+.pill.red { color: var(--red); }
+.pill.purple { color: var(--purple); }
+.feature { display: grid; gap: 6px; }
+.feature-row { display: flex; justify-content: space-between; gap: 12px; font-size: 0.86rem; }
+.feature-row b { font-weight: 500; }
+.feature-row .mono { font-size: 0.78rem; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.track { position: relative; height: 8px; border-radius: 4px; background: var(--panel-2); overflow: hidden; }
+.track .base { position: absolute; inset: 0 auto 0 0; background: #2c3d50; }
+.track .obs { position: absolute; inset: 0 auto 0 0; border-radius: 4px; }
+.feature.flag .obs { background: var(--amber); }
+.feature.calm .obs { background: var(--green); }
+.evidence-foot { font-size: 0.82rem; color: var(--muted); border-top: 1px solid var(--line); padding-top: 14px; display: grid; gap: 6px; }
+.plain { border-left: 2px solid var(--green); padding-left: 10px; color: var(--text); font-size: 0.9rem; }
+.plain strong { color: var(--green); font-weight: 600; }
+
+/* Steps: a real sequence, so numbering carries meaning. */
+.steps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; border-top: 1px solid var(--line); }
+.steps li { padding: 22px 22px 0 0; display: grid; gap: 8px; align-content: start; }
+.steps li + li { padding-left: 22px; border-left: 1px solid var(--line); }
+.step-n { font: 500 0.75rem var(--mono); color: var(--green); }
+.steps p { color: var(--muted); font-size: 0.93rem; }
+
+/* Quarantine gate */
+.gate { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 0.9fr); gap: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+.gate-inputs { padding: 24px; display: grid; gap: 4px; align-content: start; }
+.gate-inputs h3 { margin-bottom: 10px; }
+.toggle { display: grid; grid-template-columns: 1fr auto; gap: 14px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--line); cursor: pointer; }
+.toggle:last-of-type { border-bottom: 0; }
+.toggle small { display: block; color: var(--muted); font-size: 0.8rem; line-height: 1.45; }
+.switch { appearance: none; width: 42px; height: 24px; border-radius: 999px; background: #2a3a4c; position: relative; cursor: pointer; margin: 0; transition: background 0.15s; flex: none; }
+.switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: var(--text); transition: transform 0.15s; }
+.switch:checked { background: var(--green); }
+.switch:checked::after { transform: translateX(18px); background: var(--bg); }
+.range-row { display: grid; gap: 8px; padding: 12px 0 0; }
+.range-row label { display: flex; justify-content: space-between; gap: 12px; }
+.range-row output { font: 500 0.9rem var(--mono); color: var(--green); font-variant-numeric: tabular-nums; }
+input[type="range"] { width: 100%; accent-color: var(--green); }
+.gate-result { background: var(--panel-2); border-left: 1px solid var(--line); padding: 24px; display: grid; gap: 16px; align-content: start; }
+.verdict { display: grid; gap: 10px; }
+.verdict-label { font: 600 1.6rem/1.15 var(--display); }
+.verdict[data-tone="block"] .verdict-label { color: var(--red); }
+.verdict[data-tone="alert"] .verdict-label { color: var(--amber); }
+.verdict[data-tone="trust"] .verdict-label { color: var(--purple); }
+.verdict[data-tone="fail"] .verdict-label { color: var(--muted); }
+.code { font: 0.8rem var(--mono); color: var(--muted); }
+.code b { color: var(--text); font-weight: 500; }
+.checks { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: 0.86rem; }
+.checks li { display: grid; grid-template-columns: 18px 1fr; gap: 8px; color: var(--muted); }
+.checks li::before { content: "–"; color: var(--muted); font-family: var(--mono); }
+.checks li.ok { color: var(--text); }
+.checks li.ok::before { content: "✓"; color: var(--green); }
+.checks li.no::before { content: "✕"; color: var(--red); }
+.checks li.skip { opacity: 0.55; }
+.presets { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.presets button { font: 500 0.78rem var(--body); color: var(--text); background: transparent; border: 1px solid var(--line); border-radius: 8px; padding: 7px 11px; cursor: pointer; }
+.presets button:hover { border-color: var(--green); color: var(--green); }
+
+/* Screenshot */
+figure { margin: 0; display: grid; gap: 12px; }
+figure img { width: 100%; max-width: 100%; height: auto; border: 1px solid var(--line); border-radius: 12px; display: block; }
+figcaption { font-size: 0.85rem; color: var(--muted); max-width: 70ch; }
+
+/* Tour table */
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; }
+table { width: 100%; border-collapse: collapse; font-size: 0.92rem; min-width: 620px; }
+th, td { text-align: left; padding: 13px 16px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font: 500 0.72rem var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); background: var(--panel); }
+tr:last-child td { border-bottom: 0; }
+td:first-child { white-space: nowrap; font-family: var(--mono); font-size: 0.8rem; color: var(--green); }
+td q { color: var(--text); }
+td q::before, td q::after { content: none; }
+
+/* Status columns */
+.status { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.status section { border-top: 2px solid var(--line); padding-top: 16px; display: grid; gap: 10px; align-content: start; }
+.status section.real { border-top-color: var(--green); }
+.status section.sim { border-top-color: var(--amber); }
+.status section.next { border-top-color: var(--purple); }
+.status ul { margin: 0; padding-left: 18px; display: grid; gap: 6px; color: var(--muted); font-size: 0.93rem; }
+
+footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 16px; border-top: 1px solid var(--line); padding-top: 24px; font-size: 0.85rem; color: var(--muted); }
+.stack { font-family: var(--mono); font-size: 0.78rem; }
+
+@media (max-width: 860px) {
+  .hero, .gate { grid-template-columns: minmax(0, 1fr); }
+  .gate-result { border-left: 0; border-top: 1px solid var(--line); }
+  .steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .steps li:nth-child(3) { padding-left: 0; border-left: 0; }
+  .status { grid-template-columns: minmax(0, 1fr); }
+  main { gap: 64px; padding-block: 36px 56px; }
+}
+@media (max-width: 520px) {
+  .steps { grid-template-columns: minmax(0, 1fr); }
+  .steps li, .steps li + li { padding-left: 0; border-left: 0; }
+  .steps li + li { border-top: 1px solid var(--line); margin-top: 18px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .switch, .switch::after { transition: none; }
+}
+</style>
+</head>
+<body>
+
+<main>
+  <header class="hero">
+    <div class="hero-copy">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">C</div>
+        <div><div class="brand-name">CIPHER</div><div class="brand-sub">Network defense · IEEE CS</div></div>
+      </div>
+      <h1>A security guard for the <em>office network</em>.</h1>
+      <p class="lede">CIPHER learns each device's normal routine, notices when one behaves strangely, explains why in plain English, and quarantines that device only when you allow it to.</p>
+      <p class="muted">Built by The Four Horsemen for small offices, clinics, schools and shops: places with a router and no full-time security team.</p>
+    </div>
+
+    <aside class="evidence" aria-label="Example detection evidence">
+      <div class="evidence-top">
+        <h3>Office PC · 02:00:00:00:00:0A</h3>
+        <span class="pill amber">Unusual</span>
+      </div>
+      <div class="feature flag">
+        <div class="feature-row"><b>Blocked attempts</b><span class="mono">0 → 1,200 · dev 240</span></div>
+        <div class="track"><span class="obs" style="width:100%"></span></div>
+      </div>
+      <div class="feature flag">
+        <div class="feature-row"><b>Port variety (entropy)</b><span class="mono">1.0 → 7.5 · dev 26</span></div>
+        <div class="track"><span class="base" style="width:12%"></span><span class="obs" style="width:94%"></span></div>
+      </div>
+      <div class="feature calm">
+        <div class="feature-row"><b>Downloaded</b><span class="mono">66 KB → 66 KB</span></div>
+        <div class="track"><span class="obs" style="width:30%"></span></div>
+      </div>
+      <div class="feature calm">
+        <div class="feature-row"><b>Uploaded</b><span class="mono">2.1 KB → 2.0 KB</span></div>
+        <div class="track"><span class="obs" style="width:12%"></span></div>
+      </div>
+      <div class="evidence-foot">
+        <p class="plain"><strong>In plain English:</strong> Something unusual happened. CIPHER is in monitoring mode, so it raised the alarm but left the device connected.</p>
+        <p>Baseline learned from 50 reports. “dev” counts how many usual spreads a value sits from normal; above 3 is flagged. Numbers from the booth's simulated scan scenario.</p>
+      </div>
+    </aside>
+  </header>
+
+  <section class="section-head" aria-labelledby="how" style="max-width:none">
+    <p class="eyebrow">How it works</p>
+    <h2 id="how">Four steps, from a packet to a decision</h2>
+    <ol class="steps">
+      <li><span class="step-n">01 · Watch</span><h3>Measure at the router</h3><p>A small eBPF program inside the router's Linux kernel counts and measures traffic. It never reads contents.</p></li>
+      <li><span class="step-n">02 · Learn</span><h3>Know what's normal</h3><p>For every device, CIPHER builds a baseline of downloads, uploads, blocked attempts and port variety.</p></li>
+      <li><span class="step-n">03 · Explain</span><h3>Ask for a second opinion</h3><p>When a report is far from normal, an AI reviewer reads the numbers and explains them in plain language.</p></li>
+      <li><span class="step-n">04 · Respond</span><h3>Quarantine one device</h3><p>Only if every safety rule passes, and only after the router confirms it, is the device blocked. Everything else keeps working.</p></li>
+    </ol>
+  </section>
+
+  <section class="section-head" aria-labelledby="gate-title" style="max-width:none">
+    <p class="eyebrow">Try it</p>
+    <h2 id="gate-title">The quarantine gate</h2>
+    <p class="lede">The AI can't block anything by itself. Flip the switches to see what CIPHER does. This is the same rule the server runs.</p>
+    <div class="gate">
+      <form class="gate-inputs" id="gate-form" aria-label="Quarantine conditions">
+        <h3>Situation</h3>
+        <label class="toggle" for="g-enforce"><span>Automatic response is on<small>Default is monitoring: alert only.</small></span><input class="switch" type="checkbox" id="g-enforce" checked></label>
+        <label class="toggle" for="g-trusted"><span>Device is on the trusted list<small>For example, the IT admin's laptop.</small></span><input class="switch" type="checkbox" id="g-trusted"></label>
+        <label class="toggle" for="g-signals"><span>Two or more measurements are abnormal<small>One odd number, such as a big download, is not enough.</small></span><input class="switch" type="checkbox" id="g-signals" checked></label>
+        <label class="toggle" for="g-online"><span>AI reviewer answered<small>Off simulates an outage or a garbled answer.</small></span><input class="switch" type="checkbox" id="g-online" checked></label>
+        <label class="toggle" for="g-block"><span>AI recommends blocking</span><input class="switch" type="checkbox" id="g-block" checked></label>
+        <div class="range-row">
+          <label for="g-conf"><span>AI confidence</span><output id="g-conf-out" for="g-conf">92 / 100</output></label>
+          <input type="range" id="g-conf" min="0" max="100" value="92">
+        </div>
+        <div class="presets" aria-label="Scenarios">
+          <button type="button" data-preset="scan">Port scan</button>
+          <button type="button" data-preset="download">Big download</button>
+          <button type="button" data-preset="trusted">Trusted laptop</button>
+          <button type="button" data-preset="outage">AI outage</button>
+          <button type="button" data-preset="monitor">Monitoring mode</button>
+        </div>
+      </form>
+      <div class="gate-result" aria-live="polite">
+        <div class="verdict" id="verdict" data-tone="block">
+          <p class="eyebrow">CIPHER's decision</p>
+          <p class="verdict-label" id="verdict-label">Quarantine requested</p>
+          <p class="plain" id="verdict-plain"><strong>In plain English:</strong> Several warning signs agreed.</p>
+          <p class="code">server action: <b id="verdict-code">isolation_requested</b></p>
+        </div>
+        <ul class="checks" id="checks"></ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="section-head" aria-labelledby="see" style="max-width:none">
+    <p class="eyebrow">The operator's view</p>
+    <h2 id="see">Every alert starts in plain English</h2>
+    <figure>
+      <img src="plain-english-incidents.png" width="1126" height="978" alt="CIPHER dashboard incident history. Three scan incidents with plain-English summaries: alarm raised in monitoring mode; trusted device reported but not blocked; quarantine requested in automatic mode.">
+      <figcaption>Captured from the real CIPHER dashboard during a booth rehearsal. The traffic and the <span class="mono">[DEMO]</span> reviewer answers are simulated; detection, storage and response rules are the real backend.</figcaption>
+    </figure>
+  </section>
+
+  <section class="section-head" aria-labelledby="tour" style="max-width:none">
+    <p class="eyebrow">At the booth · about 3 minutes</p>
+    <h2 id="tour">The guided tour</h2>
+    <p class="muted">Run <span class="mono">python3 scripts/booth.py tour</span>. Each step runs the scenario and prints what to say.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Step</th><th>What happens</th><th>What to say</th></tr></thead>
+        <tbody>
+          <tr><td>1 · Meet</td><td>One office computer, baseline learned, monitoring mode</td><td><q>CIPHER has learned this computer's normal routine.</q></td></tr>
+          <tr><td>2 · Scan</td><td>Hundreds of blocked attempts across many ports</td><td><q>It raised the alarm but didn't disconnect anyone.</q></td></tr>
+          <tr><td>3 · Act</td><td>Automatic mode on, same scan, device quarantined once the sensor confirms</td><td><q>Several warning signs agreed, so it quarantined just this device.</q></td></tr>
+          <tr><td>4 · Trust</td><td>Device marked trusted, scan again</td><td><q>Still reported, never cut off automatically.</q></td></tr>
+          <tr><td>5 · Outage</td><td>AI reviewer offline, scan again</td><td><q>The alarm still works, and nobody is blocked on a guess.</q></td></tr>
+          <tr><td>6 · Reset</td><td>Back to monitoring, history kept</td><td><q>Ready for the next visitor.</q></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="section-head" aria-labelledby="status" style="max-width:none">
+    <p class="eyebrow">Where we are</p>
+    <h2 id="status">What's real, what's simulated, what's next</h2>
+    <div class="status">
+      <section class="real">
+        <h3>Working software</h3>
+        <ul>
+          <li>Rust control plane with signed-in dashboard</li>
+          <li>Per-device baselines and statistical detection</li>
+          <li>Monitor and automatic modes, trust, manual override</li>
+          <li>Claude, OpenAI or local Ollama models as reviewer</li>
+          <li>Command confirmations, outage handling, reconnect replay</li>
+          <li>eBPF/XDP sensor compiles; durable report queue tested</li>
+        </ul>
+      </section>
+      <section class="sim">
+        <h3>Simulated at the booth</h3>
+        <ul>
+          <li>The office computer and its traffic</li>
+          <li>The sensor's confirmations (no real packets blocked)</li>
+          <li>AI answers, unless the real model is switched on</li>
+        </ul>
+      </section>
+      <section class="next">
+        <h3>Next</h3>
+        <ul>
+          <li>Rehearsal on a real gateway with packet-level blocking</li>
+          <li>Accuracy measured against representative attacks</li>
+          <li>Per-sensor credentials and stronger device identity</li>
+        </ul>
+      </section>
+    </div>
+  </section>
+
+  <footer>
+    <span>CIPHER · The Four Horsemen · IEEE Computer Society technical project</span>
+    <span class="stack">eBPF/XDP · Rust · Axum · SQLite · FlatBuffers · TLS WebSockets</span>
+  </footer>
+</main>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const inputs = { enforce: $("g-enforce"), trusted: $("g-trusted"), signals: $("g-signals"), online: $("g-online"), block: $("g-block"), conf: $("g-conf") };
+  // Plain-English lines match ui-dashboard/app.js plainLanguage().
+  const outcomes = {
+    failed: ["Alert only, no AI review", "fail", "review failed", "The behaviour looked unusual, but the AI supervisor could not give a usable answer. CIPHER kept the alert and did not block anyone on a guess."],
+    trusted_device: ["Reported, not blocked", "trust", "trusted_device", "This device is on the trusted list. CIPHER still reports what it saw, but it will never cut a trusted device off automatically."],
+    observe_only: ["Alert raised", "alert", "observe_only", "Something unusual happened. CIPHER is in monitoring mode, so it raised the alarm but left the device connected."],
+    review_only: ["Alert, no block suggested", "alert", "review_only", "Unusual, but the supervisor did not think it was worth blocking. The device stays connected."],
+    insufficient_evidence: ["Alert, evidence too weak", "alert", "insufficient_evidence", "The supervisor suggested blocking, but the evidence was not strong enough for CIPHER's safety rules, so the device stays connected."],
+    isolation_requested: ["Quarantine requested", "block", "isolation_requested", "Several warning signs agreed and automatic response is switched on, so CIPHER asked the sensor to quarantine this device."],
+  };
+  const presets = {
+    scan: { enforce: true, trusted: false, signals: true, online: true, block: true, conf: 95 },
+    download: { enforce: true, trusted: false, signals: false, online: true, block: false, conf: 40 },
+    trusted: { enforce: true, trusted: true, signals: true, online: true, block: true, conf: 95 },
+    outage: { enforce: true, trusted: false, signals: true, online: false, block: true, conf: 95 },
+    monitor: { enforce: false, trusted: false, signals: true, online: true, block: true, conf: 95 },
+  };
+  function decide(s) {
+    // Same order as Server/src/router_socket.rs.
+    if (!s.online) return "failed";
+    if (s.trusted) return "trusted_device";
+    if (!s.enforce) return "observe_only";
+    if (!s.block) return "review_only";
+    if (s.conf < 85 || !s.signals) return "insufficient_evidence";
+    return "isolation_requested";
+  }
+  function render() {
+    const s = { enforce: inputs.enforce.checked, trusted: inputs.trusted.checked, signals: inputs.signals.checked, online: inputs.online.checked, block: inputs.block.checked, conf: +inputs.conf.value };
+    $("g-conf-out").textContent = s.conf + " / 100";
+    inputs.block.disabled = inputs.conf.disabled = !s.online;
+    const [label, tone, code, plain] = outcomes[decide(s)];
+    $("verdict").dataset.tone = tone;
+    $("verdict-label").textContent = label;
+    $("verdict-code").textContent = code;
+    $("verdict-plain").innerHTML = "<strong>In plain English:</strong> " + plain;
+    const rows = [
+      ["AI reviewer gave a valid answer", s.online],
+      ["Device is not trusted", !s.trusted],
+      ["Automatic response is on", s.enforce],
+      ["AI recommends blocking", s.online ? s.block : null],
+      ["AI confidence at least 85", s.online ? s.conf >= 85 : null],
+      ["At least two abnormal measurements", s.signals],
+    ];
+    $("checks").innerHTML = rows.map(([text, ok]) => `<li class="${ok === null ? "skip" : ok ? "ok" : "no"}">${text}</li>`).join("");
+  }
+  Object.values(inputs).forEach((el) => el.addEventListener("input", render));
+  document.querySelectorAll("[data-preset]").forEach((button) => button.addEventListener("click", () => {
+    const p = presets[button.dataset.preset];
+    for (const key of ["enforce", "trusted", "signals", "online", "block"]) inputs[key].checked = p[key];
+    inputs.conf.value = p.conf;
+    render();
+  }));
+  $("gate-form").addEventListener("submit", (e) => e.preventDefault());
+  render();
+})();
+</script>
+</body>
+</html>

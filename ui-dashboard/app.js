@@ -466,10 +466,24 @@ function renderDevices() {
         .join("")
     : `<tr><td colspan="5">${empty(devices.length ? "No matching devices" : "No devices observed", devices.length ? "Try a different search or state filter." : state.token ? "Devices appear after the sensor sends telemetry." : "Sign in to view your network inventory.")}</td></tr>`;
 }
+// One-sentence summary for visitors and non-specialist operators; derived only from stored state.
+function plainLanguage(log) {
+  if (log.review_status === "pending") return "CIPHER noticed this device behaving differently from its usual pattern and is asking the supervisor for a second opinion.";
+  if (log.review_status === "failed") return "The behaviour looked unusual, but the AI supervisor could not give a usable answer. CIPHER kept the alert and did not block anyone on a guess — a person should take a look.";
+  return {
+    observe_only: "Something unusual happened. CIPHER is in monitoring mode, so it raised the alarm but left the device connected.",
+    review_only: "Unusual, but the supervisor did not think it was worth blocking — for example, a large legitimate download. The device stays connected.",
+    insufficient_evidence: "The supervisor suggested blocking, but the evidence was not strong enough for CIPHER's safety rules, so the device stays connected.",
+    isolation_requested: "Several warning signs agreed and automatic response is switched on, so CIPHER asked the sensor to quarantine this device. Check Devices to see whether the sensor confirmed it.",
+    trusted_device: "This device is on the trusted list. CIPHER still reports what it saw, but it will never cut a trusted device off automatically.",
+    superseded: "Settings or the incident changed while this was being reviewed, so CIPHER took no automatic action.",
+    suppressed_by_policy: "The sensor's local safety check flagged this device; the current policy kept it connected.",
+  }[log.action] || "CIPHER recorded unusual activity for review. No automatic action was taken.";
+}
 function incidentMarkup(log) {
   const admin = state.networks.find(n => n.network_id === state.network)?.is_admin;
   const reasons = log.evidence?.measurements?.reasons || [];
-  return `<article class="incident"><div class="incident-top"><h3>${escapeHtml(log.threat_name)}</h3>${badge(log.disposition || "open", log.disposition === "open" ? "learning" : "online")}</div><p>${escapeHtml(log.explanation)}</p><p>Supervisor: ${escapeHtml(log.review_status || "not requested")} · Action: ${escapeHtml((log.action || "alert_only").replaceAll("_", " "))}${log.confidence ? ` · ${log.threat_name.startsWith("[DEMO]") ? "Fixture score" : "Model confidence"}: ${log.confidence}/100${log.threat_name.startsWith("[DEMO]") ? "" : " (self-reported)"}` : ""}</p>${reasons.length ? `<details data-evidence-id="${log.id}"><summary>Detection evidence</summary><ul>${reasons.map(r => `<li>${escapeHtml(r)}</li>`).join("")}</ul></details>` : ""}<div class="incident-meta"><span class="mono">${escapeHtml(log.mac)}</span><time>${escapeHtml(date(log.timestamp))}</time></div>${log.note ? `<p>Review note: ${escapeHtml(log.note)}</p>` : ""}<div class="incident-actions">${["resolved", "false_positive", "open"].filter(v => v !== log.disposition).map(v => `<button class="button small secondary" data-review-id="${log.id}" data-disposition="${v}" ${!admin || state.stale ? "disabled" : ""}>${v === "open" ? "Reopen" : v === "resolved" ? "Resolve" : "Mark false positive"}</button>`).join("")}</div></article>`;
+  return `<article class="incident"><div class="incident-top"><h3>${escapeHtml(log.threat_name)}</h3>${badge(log.disposition || "open", log.disposition === "open" ? "learning" : "online")}</div><p class="plain"><strong>In plain English:</strong> ${escapeHtml(plainLanguage(log))}</p><p>${escapeHtml(log.explanation)}</p><p>Supervisor: ${escapeHtml(log.review_status || "not requested")} · Action: ${escapeHtml((log.action || "alert_only").replaceAll("_", " "))}${log.confidence ? ` · ${log.threat_name.startsWith("[DEMO]") ? "Fixture score" : "Model confidence"}: ${log.confidence}/100${log.threat_name.startsWith("[DEMO]") ? "" : " (self-reported)"}` : ""}</p>${reasons.length ? `<details data-evidence-id="${log.id}"><summary>Detection evidence</summary><ul>${reasons.map(r => `<li>${escapeHtml(r)}</li>`).join("")}</ul></details>` : ""}<div class="incident-meta"><span class="mono">${escapeHtml(log.mac)}</span><time>${escapeHtml(date(log.timestamp))}</time></div>${log.note ? `<p>Review note: ${escapeHtml(log.note)}</p>` : ""}<div class="incident-actions">${["resolved", "false_positive", "open"].filter(v => v !== log.disposition).map(v => `<button class="button small secondary" data-review-id="${log.id}" data-disposition="${v}" ${!admin || state.stale ? "disabled" : ""}>${v === "open" ? "Reopen" : v === "resolved" ? "Resolve" : "Mark false positive"}</button>`).join("")}</div></article>`;
 }
 function renderIncidents() {
   const expanded = ["recent-incidents", "incidents-list"].map(id => [id,

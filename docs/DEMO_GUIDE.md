@@ -38,6 +38,8 @@ The runner sends normal synthetic observations every five seconds between hooks 
 
 ## Three-minute presentation
 
+The easiest way to run it is `python3 scripts/booth.py tour`. It runs the steps below and pauses for Enter, printing what changed, a plain-English **SAY** line and a **SHOW** pointer for each step. With `--llm configured`, the fixture-only outage step is skipped, and step 3 switches to an alternative narration if the model declines to recommend blocking. `tour --auto 20 --loop` repeats it unattended. Every incident in the dashboard begins with an **In plain English** sentence. For openers, the analogy and visitor questions, see [CIPHER in plain English](CIPHER_EXPLAINED.md).
+
 Start with: **“This is our working control plane with a simulated edge sensor. The offline supervisor is scripted so we can demonstrate the same policy and failure cases reliably.”**
 
 | Time | Action | Point to make |
@@ -71,4 +73,4 @@ Every `hook NAME` above means `python3 scripts/booth.py hook NAME`. Hooks wait f
 
 Keep the laptop charged and sleep disabled during presenting. The reliable software demo needs no cloud connectivity. Avoid attaching the physical sensor to the event network as a substitute for a rehearsed, controlled gateway test.
 
-Separate instructions: [LLM setup](LLM_SETUP.md), [hardware/runbook](BOOTH_RUNBOOK.md), [readiness audit](BOOTH_READINESS.md), [slide deck and rebuild notes](presentation/README.md).
+Separate instructions: [full laptop setup](SETUP.md), [plain-English explainer](CIPHER_EXPLAINED.md), [showcase page](showcase/index.html), [LLM setup](LLM_SETUP.md), [hardware/runbook](BOOTH_RUNBOOK.md), [readiness audit](BOOTH_READINESS.md), [slide deck and rebuild notes](presentation/README.md).

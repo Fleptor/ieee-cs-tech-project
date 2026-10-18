@@ -6,6 +6,9 @@ CIPHER collects eBPF/XDP metadata with a Rust sensor, sends acknowledged FlatBuf
 
 ## Start here
 
+- **[Setup: fresh laptop to working AI reviewer](docs/SETUP.md)**: one guide, start to finish
+- [CIPHER in plain English: openers, analogy, visitor Q&A](docs/CIPHER_EXPLAINED.md)
+- [Showcase page with the interactive quarantine gate](docs/showcase/index.html) (open in a browser)
 - [Presenter guide: what to show, three-minute flow and fallback](docs/DEMO_GUIDE.md)
 - [LLM setup: Anthropic, OpenAI-compatible endpoints and verification](docs/LLM_SETUP.md)
 - [Booth and physical-sensor setup, scenario hooks and recovery](docs/BOOTH_RUNBOOK.md)
@@ -25,9 +28,10 @@ Open **https://localhost:3100**. The terminal gives the path to the disposable o
 
 ```sh
 python3 scripts/booth.py rehearse
+python3 scripts/booth.py tour            # guided story with plain-English SAY/SHOW cues
 ```
 
-The rehearsal checks the complete flow, saves a JSON report in the session directory, and restores the next-visitor state. Then run individual scenarios:
+`tour --auto 20 --loop` runs the story unattended. The rehearsal checks the complete flow, saves a JSON report in the session directory, and restores the next-visitor state. Then run individual scenarios. Each prints a short status plus what to say and show; add `--json` for the full result:
 
 ```sh
 python3 scripts/booth.py hook scan

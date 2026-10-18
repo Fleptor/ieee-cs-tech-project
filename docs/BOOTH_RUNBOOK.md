@@ -73,7 +73,7 @@ Each anomaly hook deliberately relearns the demo device using 50 generated norma
 | `reset` | Prepare for the next visitor | Monitor mode, trust revoked, access restoration queued, old open incidents resolved, baseline relearned; history retained |
 | `status` | Verify current state | Prints policy, device trust/state, online status and latest incident |
 
-Run hooks as `python3 scripts/booth.py hook NAME`. LLM outage/malformed/recovery hooks require the fixture; they never alter a live provider account. To get an entirely empty session, stop and restart the runner. The hook command returns failure when a scenario fails; inspect the session's `server.log`.
+Run hooks as `python3 scripts/booth.py hook NAME`. Output is a short state summary with plain-English SAY/SHOW cues; `--json` prints the full result. `python3 scripts/booth.py tour` chains the presenter flow. LLM outage/malformed/recovery hooks require the fixture; they never alter a live provider account. To get an entirely empty session, stop and restart the runner. The hook command returns failure when a scenario fails; inspect the session's `server.log`.
 
 Suggested three-minute walkthrough:
 
